@@ -59,7 +59,7 @@ def load_csvs_from_ftp_to_df(
         files = drive_service.files().list(q=query, fields="files(id, name)").execute()["files"]
 
         # Download and merge
-        months = [str(year) + str(i) for i in date_range]
+        months = [str(year) + str(i) if len(str(i)) == 2 else str(year) + "0" + str(i) for i in date_range]
         dfs = []
 
         for file in files:
