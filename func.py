@@ -55,8 +55,21 @@ def load_csvs_from_ftp_to_df(
         folder_id = drive_service.files().list(q=query, fields="files(id)").execute()["files"][0]["id"]
 
         # Find CSV files
-        query = f"'{folder_id}' in parents and name contains 'CRMLS'"
-        files = drive_service.files().list(q=query, fields="files(id, name)").execute()["files"]
+        query = (
+            f"'{folder_id}' in parents "
+            "and mimeType = 'application/vnd.google-apps.folder' "
+            "and name = 'dataset'"
+        )
+        dataset_folder_id = drive_service.files().list(
+            q=query,
+            fields="files(id)"
+        ).execute()["files"][0]["id"]
+
+        query = f"'{dataset_folder_id}' in parents and name contains 'CRMLS'"
+        files = drive_service.files().list(
+            q=query,
+            fields="files(id, name)"
+        ).execute()["files"]
 
         # Download and merge
         months = [str(year) + str(i) if len(str(i)) == 2 else str(year) + "0" + str(i) for i in date_range]
