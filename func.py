@@ -272,6 +272,12 @@ def pre_process(
 
     df_clean[categorical_cols] = df_clean[categorical_cols].astype("category")
 
+    # Remove erroneous or non-economic transactions, remove the top 0.5% and bottom 0.5% of ClosePricevalues
+    low = df_clean["ClosePrice"].quantile(0.005)
+    high = df_clean["ClosePrice"].quantile(0.995)
+
+    df_clean = df_clean[(df_clean["ClosePrice"] >= low) & (df_clean["ClosePrice"] <= high)]
+
     """
     Space for further processing
     """
