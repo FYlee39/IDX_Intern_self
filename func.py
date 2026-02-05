@@ -5,8 +5,6 @@ from io import BytesIO
 from typing import Iterable, Optional, Union, List
 import sys
 import io
-from gower import gower_matrix
-from sklearn.cluster import AgglomerativeClustering
 from sklearn.neighbors import KNeighborsClassifier
 from kmodes.kprototypes import KPrototypes
 import os
@@ -493,31 +491,55 @@ def fill_na_by_cluster(
 
 def pre_process(
         df: pd.DataFrame,
-        columns=None,
-        categorical_cols=None,
+        positive_col_list: list[str]=None,
+        non_negative_col_list: list[str]=None,
+        missing_threshold: float=0.8,
+        missing_col_list: list[str]=None,
+        save=True,
+        save_name=None,
+        **kwargs
 ) -> pd.DataFrame:
     """
     Pre-process data
     :param df: raw data frame
-    :param columns: columns to preprocess
-    :param categorical_cols: categorical columns
-    :return: pandas DataFrame
+    :param positive_col_list: col with positive constraint
+    :param non_negative_col_list: col with non-negative constraint
+    :param missing_threshold: remove the column with missing rate higher than this value
+    :param missing_col_list: list of column names need to remove
+    :param save: whether save the processed data to a new file
+    :param save_name: name of the processed file
+    :param **kwargs:
+        Optional keyword arguments:
+        num_clusters : int, default=3
+            number of clusters
+        distance : function, default=compute_gower
+            Method to compute distance
+        num_cluster : int, default=3
+            Number of clusters iterations.
+        fill_method_num : str, default="median"
+            Method to fill na for numerical data
+        fill_method_num : str, default="mode"
+            Method to fill na for categorical data
+        method : str, default=None
+            Method to cluster
+        knn_k : int, default=1
+            Number of nearest neighbors
+        knn_distance : str, default="radians
+            Method to compute distance for KNN
+        random_state : random seed
     """
+    num_clusters = kwargs.pop("num_clusters", 3)
+    random_state = kwargs.pop("random_state", 42)
+
+    df_clean = df.copy(deep=True)
+
+    ### Remove unrelated columns
 
     # Remove PropertyType and PropertySubType
-    df = df.drop(columns=["PropertyType", "PropertySubType"])
-
-    # Remove entries with non-positive close price
-    df = df[df["ClosePrice"] > 0]
-
-    # Remove columns with 0 non-null value
-    df = df.dropna(axis=1, how="all")
-
-    # Convert the dtype of CloseDate
-    df["CloseDate"] = pd.to_datetime(df["CloseDate"])
+    df_clean = df_clean.drop(columns=["PropertyType", "PropertySubType"])
 
     # Remove agent and office name
-    df = df.drop(columns=[
+    df_clean = df_clean.drop(columns=[
         "ListAgentFirstName",
         "ListAgentLastName",
         "ListAgentFullName",
@@ -529,7 +551,7 @@ def pre_process(
     ])
 
     # Remove id
-    df = df.drop(columns=[
+    df_clean = df_clean.drop(columns=[
         "BuyerAgentMlsId",
         "ListingId",
         "ListingKey",
@@ -539,25 +561,12 @@ def pre_process(
     # Extract Email Domains
     # Extract only the domain from email addresses (e.g., gmail.com, yahoo.com)
     # Extract email domain (part after @)
-    df["EmailDomain"] = df["ListAgentEmail"].str.split("@").str[1]
+    df_clean["EmailDomain"] = df_clean["ListAgentEmail"].str.split("@").str[1]
 
-    df = df.drop(columns=[
-        "ListAgentEmail"
-    ])
+    df_clean = df_clean.drop(columns=["ListAgentEmail"])
 
-    # Remove identical columns
-    df = df.loc[:, df.nunique(dropna=True) > 1]
 
-    if columns is None:
-        columns = list(df.columns)
-    df_clean = df[columns].copy()
-    # Infer types if not provided
-    if categorical_cols is None:
-        numeric_cols = list(df_clean.select_dtypes(include=["number"]).columns)
-        categorical_cols = [c for c in columns if c not in numeric_cols]
-    else:
-        categorical_cols = list(categorical_cols)
-        numeric_cols = [c for c in columns if c not in categorical_cols]
+    ### Remove impossible/illogical rows
 
     # Remove erroneous or non-economic transactions, remove the top 0.5% and bottom 0.5% of ClosePrice
     low = df_clean["ClosePrice"].quantile(0.005)
@@ -565,19 +574,98 @@ def pre_process(
 
     df_clean = df_clean[(df_clean["ClosePrice"] >= low) & (df_clean["ClosePrice"] <= high)]
 
-    # Pre-process
+    # Remove non-positive and negative rows according to constraints
+    if positive_col_list is not None:
+        for pos_col in positive_col_list:
+            df_clean = df_clean[df_clean[pos_col] > 0]
+    if non_negative_col_list is not None:
+        for col in non_negative_col_list:
+            df_clean = df_clean[df_clean[col] >= 0]
 
-    # Filling missing categorical data
+    # remove row that exceed the range for latitude, longitude
+    lat_min, lat_max = 32.5, 42.0
+    lon_min, lon_max = -124.5, -114.0
+    df_clean = df_clean[(df_clean["Latitude"].between(lat_min, lat_max))
+                        & (df_clean["Longitude"].between(lon_min, lon_max))]
 
+    # Convert the dtype of CloseDate
+    df_clean["CloseDate"] = pd.to_datetime(df_clean["CloseDate"])
 
+    ### Handle missing value
+
+    # Given specific col to be removed
+    if missing_col_list is not None:
+        df_clean = df_clean.drop(columns=missing_col_list)
+    else:
+        df_clean = df_clean.loc[:, df_clean.isna().mean() < missing_threshold]
+
+    # For "Levels", "Flooring", using binary flag, fill the na with false
+    df_clean = create_flag(df_clean, ["Levels", "Flooring"])
+
+    # For "CoListOfficeName", "MLSAreaMajor", "BuyerOfficeAOR", "BuyerOfficeName", "EmailDomain", fill with mode by city
+    df_clean = fill_na_with_mode(df=df_clean,
+                                 target_col_list=["CoListOfficeName", "MLSAreaMajor", "BuyerOfficeAOR",
+                                                  "BuyerOfficeName", "EmailDomain"],
+                                 reference_col="City")
+
+    # For school-related variables, Nearest-neighbor assignment through longitude and latitude
+    df_clean = fill_na_by_cluster(df=df_clean,
+                                  target_col_list=["ElementarySchool", "MiddleOrJuniorSchool", "HighSchool",
+                                                   "HighSchoolDistrict"],
+                                  reference_col_list=["Longitude", "Latitude"],
+                                  method="knn")
+
+    # For "YN" variables, fill the na with False
+    df_clean["AttachedGarageYN"] = df_clean["AttachedGarageYN"].fillna(False)
+    df_clean["ViewYN"] = df_clean["ViewYN"].fillna(False)
+    df_clean["NewConstructionYN"] = df_clean["NewConstructionYN"].fillna(False)
+    df_clean["PoolPrivateYN"] = df_clean["PoolPrivateYN"].fillna(False)
+    df_clean["FireplaceYN"] = df_clean["FireplaceYN"].fillna(False)
+
+    # For "BuyerAgentAOR" and "ListAgentAOR", fill na with other
+    df_clean["BuyerAgentAOR"] = df_clean["BuyerAgentAOR"].fillna("Other")
+    df_clean["ListAgentAOR"] = df_clean["ListAgentAOR"].fillna("Other")
+
+    # For other variables, clustering according to all variables, then fill the na
+    quality_summary_table = data_quality_summary(df_clean)
+    col_need_to_fill_na = quality_summary_table[quality_summary_table["num_missing"] > 0]["column"]
+    reference_col_list = quality_summary_table[quality_summary_table["num_missing"] == 0]["column"]
+
+    df_clean = fill_na_by_cluster(df=df_clean,
+                                  target_col_list=col_need_to_fill_na,
+                                  reference_col_list=reference_col_list,
+                                  method="k-prototypes",
+                                  num_clusters=num_clusters,
+                                  random_state=random_state,
+                                  **kwargs)
 
     """
     Space for further processing
     """
+
+    # Saving the processed data
+    if save:
+        save_name = save_name if save_name is not None else "processed_data"
+        i = 1
+        while os.path.exists(save_name + ".csv"):
+            save_name = save_name + str(i)
+            i += 1
+        df_clean.to_csv(save_name + ".csv", index=False)
 
     return df_clean
 
 
 if __name__ == '__main__':
     df = load_csvs_from_ftp_to_df(provided_local_dir="./")
-    print(df.head())
+    positive_col_list = ["BedroomsTotal",
+                         "BathroomsTotalInteger",
+                         "LotSizeAcres",
+                         "LotSizeArea",
+                         "LotSizeSquareFeet"]
+    negative_col_list = ["ParkingTotal"]
+    df_clean = pre_process(df,
+                           positive_col_list=positive_col_list,
+                           non_negative_col_list=negative_col_list,
+                           missing_threshold=1.0)
+    quality_summary_table = data_quality_summary(df_clean)
+    print(quality_summary_table.sort_values(by=["missing_%"], ascending=False))
