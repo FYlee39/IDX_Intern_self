@@ -5,6 +5,11 @@ from io import BytesIO
 from typing import Iterable, Optional, Union, List
 import sys
 import io
+from gower import gower_matrix
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.neighbors import KNeighborsClassifier
+from kmodes.kprototypes import KPrototypes
+import os
 
 
 def load_csvs_from_ftp_to_df(
@@ -157,6 +162,7 @@ def read_csvs(
 
     return filtered_df
 
+
 def data_quality_summary(
         df: pd.DataFrame
 ) -> pd.DataFrame:
@@ -171,36 +177,319 @@ def data_quality_summary(
     for col in df.columns:
         col_s = df[col]
         missing_pct = col_s.isna().mean() * 100
+        missing_num = col_s.isna().sum()
         dtype = col_s.dtype
         nunique = col_s.nunique(dropna=True)
-
-        # Default outlier pct
-        outlier_pct = np.nan
-
-        # If the dtype is numeric, check the outlier rate
-        if pd.api.types.is_numeric_dtype(col_s):
-            col_s = col_s.dropna()
-            if len(col_s) > 0:
-                q1 = col_s.quantile(0.25)
-                q3 = col_s.quantile(0.75)
-                iqr = q3 - q1
-
-                if iqr > 0:
-                    lower = q1 - 1.5 * iqr
-                    upper = q3 + 1.5 * iqr
-                    outlier_pct = ((col_s < lower) | (col_s > upper)).mean() * 100
-                else:
-                    outlier_pct = 0.0  # constant column
 
         rows.append({
             "column": col,
             "dtype": str(dtype),
             "n_unique": nunique,
             "missing_%": round(missing_pct, 2),
-            "outlier_%": round(outlier_pct, 2) if not np.isnan(outlier_pct) else np.nan
+            "num_missing": missing_num,
         })
 
     return pd.DataFrame(rows).sort_values("missing_%", ascending=False)
+
+
+def fill_na_with_mode(
+        df: pd.DataFrame,
+        target_col_list: list[str],
+        reference_col: str,
+        default_fill_val: str="Other"
+) -> pd.DataFrame:
+    """
+    Fill missing values in target_col with mode according to reference_col
+    :param df: raw data frame
+    :param target_col_list: list of target columns need to be filled
+    :param reference_col: reference column for the fill_val
+    :param default_fill_val: default fill value
+    :return: pandas DataFrame
+    """
+    df_copy = df.copy()
+
+    for col in target_col_list:
+        df_copy[col] = df_copy[col].fillna(
+            df_copy.groupby(reference_col)[col]
+            .transform(lambda x: x.mode().iloc[0] if len(x.dropna()) > 0 else default_fill_val)
+        )
+
+    return df_copy
+
+
+def create_flag(
+        df: pd.DataFrame,
+        target_col_list: list[str]
+) -> pd.DataFrame:
+    """
+    Extract unique element, then using binary flag, fill the na with false
+    :param df: raw data frame
+    :param target_col_list: list of target categorical columns need to be filled
+    :return: pandas DataFrame
+    """
+    df_copy = df.copy()
+    for col in target_col_list:
+        unique_vals = (
+            df_copy[col]
+            .dropna()
+            .str.split(",")
+            .explode()
+            .str.strip()
+            .unique()
+        )
+        for val in unique_vals:
+            df_copy[val + "YN"] = df_copy[col].str.contains(val)
+            df_copy[val + "YN"] = df_copy[val + "YN"].fillna(False)
+        # Drop redundant column
+        df_copy.drop([col], axis=1, inplace=True)
+    return df_copy
+
+
+def impute_by_cluster(
+    df: pd.DataFrame,
+    target_col: str,
+    cluster_col: str="cluster",
+    fill_cat: str="mode",
+    fill_num: str="median"
+) -> pd.DataFrame:
+    """
+    Fill the na by cluster
+    :param df: raw data frame
+    :param cluster_col: column name of cluster column
+    :param target_col: column name of target column
+    :param fill_cat: method for categorical column
+    :param fill_num: method for numerical column
+    :return: pandas DataFrame
+    """
+    target_type = "num" if pd.api.types.is_numeric_dtype(df[target_col]) else "cat"
+    for c in df[cluster_col].unique():
+        mask = df[cluster_col] == c
+        missing = mask & df[target_col].isna()
+
+        if not missing.any():
+            continue
+
+        observed = df.loc[mask & df[target_col].notna(), target_col]
+
+        # Categorical
+        if target_type == "cat":
+            if fill_cat == "mode" and not observed.empty:
+                fill_value = observed.mode().iloc[0]
+            else:
+                fill_value = "Other"
+        # Numerical
+        elif target_type == "num":
+            if observed.empty:
+                fill_value = np.nan
+            elif fill_num == "median":
+                fill_value = observed.median()
+            elif fill_num == "mean":
+                fill_value = observed.mean()
+            elif fill_num == "zero":
+                fill_value = 0
+            else:
+                raise ValueError(f"Unknown fill_num method: {fill_num}")
+        else:
+            raise ValueError("target_type must be 'cat' or 'num'")
+
+        df.loc[missing, target_col] = fill_value
+
+    return df
+
+
+def fill_col_by_knn(
+    df : pd.DataFrame,
+    target_col: str,
+    reference_col_list: list[str],
+    distance: str="radians",
+    k=1,
+    fallback_label="Other"
+) -> pd.DataFrame:
+    """
+    Fill the missing in target col through KNN
+    :param df: dataframe
+    :param target_col: column need to be filled
+    :param reference_col_list: reference column used to compute distance
+    :param distance: method for distance calculation
+    :param k: number of neighbors to use
+    :param fallback_label: label for data whose reference column are missing
+    :return: pandas DataFrame
+    """
+    df_copy = df.copy()
+
+    # Rows where target col is missing
+    target_missing = df_copy[target_col].isna()
+
+    # Rows with missing coordinates
+    coord_missing = df_copy[reference_col_list].isna().any(axis=1)
+
+    # target NA + any coord NA → "Other"
+    fallback_idx = df_copy[target_missing & coord_missing].index
+    df_copy.loc[fallback_idx, target_col] = fallback_label
+
+    # Remaining rows needing fill
+    fill_idx = df_copy[
+        target_missing & ~coord_missing
+    ].index
+
+    if len(fill_idx) == 0:
+        return df_copy
+
+    # Known row with complete reference columns
+    required_cols = reference_col_list + [target_col]
+
+    known = df_copy[df_copy[required_cols].notna().all(axis=1)]
+
+    # Coordinates (radians)
+    if distance == "radians":
+        X_known = np.radians(known[reference_col_list])
+        y_known = known[target_col]
+
+        X_missing = np.radians(df_copy.loc[fill_idx, reference_col_list])
+
+    else:
+        raise ValueError("distance not found")
+
+    # KNN
+    knn = KNeighborsClassifier(
+        n_neighbors=k,
+        metric="haversine",
+        weights="distance"
+    )
+    knn.fit(X_known, y_known)
+
+    # Predict
+    df_copy.loc[fill_idx, target_col] = knn.predict(X_missing)
+
+    return df_copy
+
+
+def get_cluster_through_k_prototypes(
+        df: pd.DataFrame,
+        reference_col_list: list[str],
+        num_cols: list[str]=None,
+        cat_cols: list[str]=None,
+        n_clusters: int=25,
+        random_state=42,
+        n_init: int=10,
+        inits: list[str]=["Cao", "Huang", "random"]
+) -> pd.DataFrame:
+    """
+    Using k-prototypes to cluster data
+    :param df: raw data frame
+    :param reference_col_list: reference column used to compute distance
+    :param num_cols: list of column names
+    :param cat_cols: list of column names
+    :param n_clusters: number of clusters
+    :param random_state: random seed
+    :param n_init: number of init clusters
+    :param inits: methods for initialization
+    :return: pandas DataFrame
+    """
+    if num_cols is None and cat_cols is None:
+        raise ValueError("num_cols and cat_cols cannot be None at the same time")
+    if num_cols is None:
+        num_cols = [x for x in reference_col_list if x not in cat_cols]
+    elif cat_cols is None:
+        cat_cols = [x for x in reference_col_list if x not in num_cols]
+
+    X = df[num_cols + cat_cols].copy()
+
+    if X.isna().any().any():
+        raise(ValueError("NaN values not allowed"))
+
+    X_np = X.to_numpy()
+
+    cat_idx = [X.columns.get_loc(c) for c in cat_cols]
+
+    for init in inits:
+        try:
+            kp = KPrototypes(
+                n_clusters=n_clusters,
+                init=init,
+                n_init=n_init,
+                verbose=0,
+                random_state=random_state
+            )
+            labels = kp.fit_predict(X_np, categorical=cat_idx)
+            return labels
+        except ValueError as e:
+            print(e)
+
+def fill_na_by_cluster(
+        df: pd.DataFrame,
+        target_col_list: list[str],
+        reference_col_list: list[str],
+        num_clusters: int=25,
+        random_state=42,
+        **kwargs
+) -> pd.DataFrame:
+    """
+    Clustering the data according to the reference column by method, then fill the na with fill_val
+    :param df: raw data frame
+    :param target_col_list: list of target columns need to be filled
+    :param reference_col_list: list of reference column used to cluster
+    :param num_clusters: number of clusters
+    :param random_state: random seed
+    :param **kwargs:
+        Optional keyword arguments:
+        distance : function, default=compute_gower
+            Method to compute distance
+        num_cluster : int, default=3
+            Number of clusters iterations.
+        fill_method_num : str, default="median"
+            Method to fill na for numerical data
+        fill_method_num : str, default="mode"
+            Method to fill na for categorical data
+        method : str, default=None
+            Method to cluster
+        knn_k: int, default=1
+            Number of nearest neighbors
+        knn_distance: str, default="radians
+            Method to compute distance for KNN
+    :return: pandas DataFrame
+    """
+    fill_method_num = kwargs.pop("fill_method_num", "median")
+    fill_method_cat = kwargs.pop("fill_method_cat", "mode")
+    method = kwargs.pop("method", None)
+    knn_k = kwargs.pop("knn_k", 1)
+    knn_distance = kwargs.pop("knn_distance", "radians")
+
+    if kwargs:
+        raise TypeError(f"Unexpected keyword arguments: {kwargs}")
+
+    df_copy = df.copy(deep=True)
+
+    if method == "knn":
+        for col in target_col_list:
+            df_copy = fill_col_by_knn(df=df_copy,
+                                      target_col=col,
+                                      reference_col_list=reference_col_list,
+                                      distance=knn_distance,
+                                      k=knn_k)
+        return df_copy
+    elif method == "k-prototypes":
+        num_cols = df_copy.select_dtypes(include="number").columns.tolist()
+        num_reference_col_list = list(set(num_cols) & set(reference_col_list))
+
+        df_copy["cluster"] = get_cluster_through_k_prototypes(df=df_copy,
+                                                              reference_col_list=reference_col_list,
+                                                              num_cols=num_reference_col_list,
+                                                              n_clusters=num_clusters,
+                                                              random_state=random_state)
+
+    for col in target_col_list:
+
+        df_copy = impute_by_cluster(
+            df_copy,
+            cluster_col="cluster",
+            target_col=col,
+            fill_cat=fill_method_cat,
+            fill_num=fill_method_num,
+        )
+
+    return df_copy.drop(["cluster"], axis=1)
+
 
 def pre_process(
         df: pd.DataFrame,
@@ -270,13 +559,17 @@ def pre_process(
         categorical_cols = list(categorical_cols)
         numeric_cols = [c for c in columns if c not in categorical_cols]
 
-    df_clean[categorical_cols] = df_clean[categorical_cols].astype("category")
-
-    # Remove erroneous or non-economic transactions, remove the top 0.5% and bottom 0.5% of ClosePricevalues
+    # Remove erroneous or non-economic transactions, remove the top 0.5% and bottom 0.5% of ClosePrice
     low = df_clean["ClosePrice"].quantile(0.005)
     high = df_clean["ClosePrice"].quantile(0.995)
 
     df_clean = df_clean[(df_clean["ClosePrice"] >= low) & (df_clean["ClosePrice"] <= high)]
+
+    # Pre-process
+
+    # Filling missing categorical data
+
+
 
     """
     Space for further processing
