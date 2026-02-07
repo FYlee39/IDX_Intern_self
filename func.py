@@ -296,13 +296,14 @@ def impute_by_cluster(
 
 
 def fill_col_by_knn(
-    df : pd.DataFrame,
-    target_col: str,
-    reference_col_list: list[str],
-    distance: str="radians",
-    k=1,
-    fallback_label="Other"
-) -> pd.DataFrame:
+        df : pd.DataFrame,
+        target_col: str,
+        reference_col_list: list[str],
+        distance: str="radians",
+        k=1,
+        fallback_label="Other",
+        model: KNeighborsClassifier=None,
+) -> (pd.DataFrame, KNeighborsClassifier):
     """
     Fill the missing in target col through KNN
     :param df: dataframe
@@ -311,7 +312,8 @@ def fill_col_by_knn(
     :param distance: method for distance calculation
     :param k: number of neighbors to use
     :param fallback_label: label for data whose reference column are missing
-    :return: pandas DataFrame
+    :param model: existed model to use
+    :return: pandas DataFrame, KNeighborsClassifier
     """
     df_copy = df.copy()
 
@@ -348,18 +350,23 @@ def fill_col_by_knn(
     else:
         raise ValueError("distance not found")
 
-    # KNN
-    knn = KNeighborsClassifier(
-        n_neighbors=k,
-        metric="haversine",
-        weights="distance"
-    )
-    knn.fit(X_known, y_known)
+    if model:
+        # For testing data
+        pass
+    else:
+        # For training data
+        # KNN
+        model = KNeighborsClassifier(
+            n_neighbors=k,
+            metric="haversine",
+            weights="distance"
+        )
+        model.fit(X_known, y_known)
 
     # Predict
-    df_copy.loc[fill_idx, target_col] = knn.predict(X_missing)
+    df_copy.loc[fill_idx, target_col] = model.predict(X_missing)
 
-    return df_copy
+    return df_copy, model
 
 
 def get_cluster_through_k_prototypes(
@@ -370,8 +377,9 @@ def get_cluster_through_k_prototypes(
         n_clusters: int=25,
         random_state=42,
         n_init: int=10,
-        inits: list[str]=["Cao", "Huang", "random"]
-) -> pd.DataFrame:
+        inits: list[str]=["Cao", "Huang", "random"],
+        model: KPrototypes=None
+) -> (pd.DataFrame, KNeighborsClassifier):
     """
     Using k-prototypes to cluster data
     :param df: raw data frame
@@ -382,7 +390,8 @@ def get_cluster_through_k_prototypes(
     :param random_state: random seed
     :param n_init: number of init clusters
     :param inits: methods for initialization
-    :return: pandas DataFrame
+    :param model: existed model to use
+    :return: pandas DataFrame, KNeighborsClassifier
     """
     if num_cols is None and cat_cols is None:
         raise ValueError("num_cols and cat_cols cannot be None at the same time")
@@ -400,19 +409,28 @@ def get_cluster_through_k_prototypes(
 
     cat_idx = [X.columns.get_loc(c) for c in cat_cols]
 
-    for init in inits:
-        try:
-            kp = KPrototypes(
-                n_clusters=n_clusters,
-                init=init,
-                n_init=n_init,
-                verbose=0,
-                random_state=random_state
-            )
-            labels = kp.fit_predict(X_np, categorical=cat_idx)
-            return labels
-        except ValueError as e:
-            print(e)
+    if model:
+        # Testing data
+        pass
+    else:
+        # Training data
+        for init in inits:
+            try:
+                model = KPrototypes(
+                    n_clusters=n_clusters,
+                    init=init,
+                    n_init=n_init,
+                    verbose=0,
+                    random_state=random_state
+                )
+                break
+            except ValueError as e:
+                print(e)
+
+    labels = model.fit_predict(X_np, categorical=cat_idx)
+    df["cluster"] = labels
+    return df, model
+
 
 def fill_na_by_cluster(
         df: pd.DataFrame,
@@ -445,6 +463,8 @@ def fill_na_by_cluster(
             Number of nearest neighbors
         knn_distance: str, default="radians
             Method to compute distance for KNN
+        model: object, default=None
+            existed model to use
     :return: pandas DataFrame
     """
     fill_method_num = kwargs.pop("fill_method_num", "median")
@@ -452,6 +472,7 @@ def fill_na_by_cluster(
     method = kwargs.pop("method", None)
     knn_k = kwargs.pop("knn_k", 1)
     knn_distance = kwargs.pop("knn_distance", "radians")
+    model = kwargs.pop("model", None)
 
     if kwargs:
         raise TypeError(f"Unexpected keyword arguments: {kwargs}")
@@ -464,17 +485,21 @@ def fill_na_by_cluster(
                                       target_col=col,
                                       reference_col_list=reference_col_list,
                                       distance=knn_distance,
-                                      k=knn_k)
+                                      k=knn_k,
+                                      model=model)
         return df_copy
     elif method == "k-prototypes":
         num_cols = df_copy.select_dtypes(include="number").columns.tolist()
         num_reference_col_list = list(set(num_cols) & set(reference_col_list))
 
-        df_copy["cluster"] = get_cluster_through_k_prototypes(df=df_copy,
-                                                              reference_col_list=reference_col_list,
-                                                              num_cols=num_reference_col_list,
-                                                              n_clusters=num_clusters,
-                                                              random_state=random_state)
+        df_copy = get_cluster_through_k_prototypes(df=df_copy,
+                                                   reference_col_list=reference_col_list,
+                                                   num_cols=num_reference_col_list,
+                                                   n_clusters=num_clusters,
+                                                   random_state=random_state,
+                                                   model=model)
+    else:
+        raise TypeError(f"Unexpected clustering method: {method}")
 
     for col in target_col_list:
 
@@ -497,6 +522,8 @@ def pre_process(
         missing_col_list: list[str]=None,
         save=True,
         save_name=None,
+        data_type: str="train",
+        model_dict: dict=None,
         **kwargs
 ) -> pd.DataFrame:
     """
@@ -508,6 +535,8 @@ def pre_process(
     :param missing_col_list: list of column names need to remove
     :param save: whether save the processed data to a new file
     :param save_name: name of the processed file
+    :param data_type: str, default="train
+    :param model_dict: existed model to use
     :param **kwargs:
         Optional keyword arguments:
         num_clusters : int, default=3
@@ -613,7 +642,8 @@ def pre_process(
                                   target_col_list=["ElementarySchool", "MiddleOrJuniorSchool", "HighSchool",
                                                    "HighSchoolDistrict"],
                                   reference_col_list=["Longitude", "Latitude"],
-                                  method="knn")
+                                  method="knn",
+                                  model=model_dict.pop("knn"))
 
     # For "YN" variables, fill the na with False
     df_clean["AttachedGarageYN"] = df_clean["AttachedGarageYN"].fillna(False)
@@ -637,6 +667,7 @@ def pre_process(
                                   method="k-prototypes",
                                   num_clusters=num_clusters,
                                   random_state=random_state,
+                                  model=model_dict.pop("k-prototypes")
                                   **kwargs)
 
     """
@@ -645,11 +676,12 @@ def pre_process(
 
     # Saving the processed data
     if save:
-        save_name = save_name if save_name is not None else "processed_data"
+        save_name = save_name if save_name is not None else "processed"
         i = 1
         while os.path.exists(save_name + ".csv"):
             save_name = save_name + str(i)
             i += 1
+        save_name = save_name + data_type + "_data"
         df_clean.to_csv(save_name + ".csv", index=False)
 
     return df_clean
