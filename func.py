@@ -671,6 +671,16 @@ def save_file(
             pickle.dump(model, f)
 
 
+def remove_duplicate(
+        df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Remove duplicate rows
+    :param df: raw data frame
+    :return: pandas DataFrame
+    """
+    return df.drop_duplicates()
+
 def pre_process(
         df: pd.DataFrame,
         **kwargs
@@ -803,6 +813,9 @@ def pre_process(
                                 col_list=col_drop_list)
 
     ### Remove rows
+
+    # Remove duplicate rows
+    df_clean = remove_duplicate(df_clean)
 
     # Convert email into email domain
     df_clean = convert_email_domains(df_clean,
