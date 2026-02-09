@@ -2,16 +2,11 @@ import pandas as pd
 import numpy as np
 from ftplib import FTP, error_perm
 from io import BytesIO
-from typing import Iterable, Optional, Union, List
+from typing import Iterable, Optional, List
 import sys
 import io
-from sklearn.pipeline import Pipeline
 import pickle
-
-from fontTools.misc.cython import returns
-from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neighbors import NearestNeighbors
-from sklearn.impute import KNNImputer
 from kmodes.kprototypes import KPrototypes
 import os
 
@@ -210,15 +205,15 @@ def fill_na_with_mode(
     :param default_fill_val: default fill value
     :return: pandas DataFrame
     """
-    df_copy = df.copy()
-
     for col in target_col_list:
-        df_copy[col] = df_copy[col].fillna(
-            df_copy.groupby(reference_col)[col]
+        if col not in df.columns:
+            continue
+        df[col] = df[col].fillna(
+            df.groupby(reference_col)[col]
             .transform(lambda x: x.mode().iloc[0] if len(x.dropna()) > 0 else default_fill_val)
         )
 
-    return df_copy
+    return df
 
 
 def create_flag(
@@ -231,10 +226,11 @@ def create_flag(
     :param target_col_list: list of target categorical columns need to be filled
     :return: pandas DataFrame
     """
-    df_copy = df.copy()
     for col in target_col_list:
+        if col not in df.columns:
+            continue
         unique_vals = (
-            df_copy[col]
+            df[col]
             .dropna()
             .str.split(",")
             .explode()
@@ -242,11 +238,11 @@ def create_flag(
             .unique()
         )
         for val in unique_vals:
-            df_copy[val + "YN"] = df_copy[col].str.contains(val)
-            df_copy[val + "YN"] = df_copy[val + "YN"].fillna(False)
+            df[val + "YN"] = df[col].str.contains(val)
+            df[val + "YN"] = df[val + "YN"].fillna(False)
         # Drop redundant column
-        df_copy.drop([col], axis=1, inplace=True)
-    return df_copy
+        df.drop([col], axis=1, inplace=True)
+    return df
 
 
 def impute_by_cluster(
@@ -378,6 +374,8 @@ def knn_impute_latlon(
         # rows without lat/lon -> global fallback
     no_ref = ~complete_coord_idx
     for col in target_col_list:
+        if col not in df.columns:
+            continue
         is_num = pd.api.types.is_numeric_dtype(df[col])
         df.loc[no_ref & df[col].isna(), col] = df[col].mean() if is_num else df[col].mode(dropna=True).iloc[0]
 
@@ -394,7 +392,7 @@ def get_cluster_through_k_prototypes(
         n_init: int=10,
         inits: list[str]=["Cao", "Huang", "random"],
         model: KPrototypes=None
-) -> (pd.DataFrame, KNeighborsClassifier):
+) -> (pd.DataFrame, KPrototypes):
     """
     Using k-prototypes to cluster data
     :param df: raw data frame
@@ -406,7 +404,7 @@ def get_cluster_through_k_prototypes(
     :param n_init: number of init clusters
     :param inits: methods for initialization
     :param model: existed model to use
-    :return: pandas DataFrame, KNeighborsClassifier
+    :return: pandas DataFrame, KPrototypes
     """
     if num_cols is None and cat_cols is None:
         raise ValueError("num_cols and cat_cols cannot be None at the same time")
@@ -438,11 +436,12 @@ def get_cluster_through_k_prototypes(
                     verbose=0,
                     random_state=random_state
                 )
+                model.fit(X_np, categorical=cat_idx)
                 break
             except ValueError as e:
                 print(e)
 
-    labels = model.fit_predict(X_np, categorical=cat_idx)
+    labels = model.predict(X_np, categorical=cat_idx)
     df["cluster"] = labels
     return df, model
 
@@ -462,31 +461,21 @@ def fill_na_by_cluster(
     :param reference_col_list: list of reference column used to cluster
     :param num_clusters: number of clusters
     :param random_state: random seed
-    :param **kwargs:
+    :param kwargs:
         Optional keyword arguments:
-        distance : function, default=compute_gower
-            Method to compute distance
-        num_cluster : int, default=3
-            Number of clusters iterations.
         fill_method_num : str, default="median"
             Method to fill na for numerical data
         fill_method_num : str, default="mode"
             Method to fill na for categorical data
-        method : str, default=None
+        method : str, default=k-prototypes
             Method to cluster
-        knn_k: int, default=1
-            Number of nearest neighbors
-        knn_distance: str, default="radians
-            Method to compute distance for KNN
         model: object, default=None
             existed model to use
     :return: (pandas DataFrame, model)
     """
     fill_method_num = kwargs.pop("fill_method_num", "median")
     fill_method_cat = kwargs.pop("fill_method_cat", "mode")
-    method = kwargs.pop("method", None)
-    knn_k = kwargs.pop("knn_k", 1)
-    knn_distance = kwargs.pop("knn_distance", "radians")
+    method = kwargs.pop("method", "k-prototypes")
     model = kwargs.pop("model", None)
 
     if kwargs:
@@ -551,8 +540,6 @@ def convert_email_domains(
         df[domain_col_name] = df[email_col_name].str.split("@").str[1]
 
         df = df.drop(columns=[email_col_name])
-    else:
-        print(email_col_name + "not found")
 
     return df
 
@@ -569,8 +556,10 @@ def remove_extreme_rows(
     :param price_col: price column name
     :param upper_bound_pct: upper bound pct
     :param lower_bound_pct: lower bound pct
-    :return:
+    :return: pandas DataFrame
     """
+    if price_col not in df.columns:
+        raise TypeError(f"Price column name not found: {price_col}")
     low = df[price_col].quantile(lower_bound_pct)
     high = df[price_col].quantile(upper_bound_pct)
 
@@ -593,9 +582,13 @@ def remove_by_positive_or_non_negative_constraint(
     """
     if positive_col_list is not None:
         for pos_col in positive_col_list:
+            if pos_col not in df.columns:
+                continue
             df = df[df[pos_col] > 0]
     if non_negative_col_list is not None:
         for col in non_negative_col_list:
+            if col not in df.columns:
+                continue
             df = df[df[col] >= 0]
 
     return df
@@ -621,7 +614,7 @@ def remove_by_location(
         df = df[(df["Latitude"].between(lat_min, lat_max))
                             & (df["Longitude"].between(lon_min, lon_max))]
     else:
-        raise TypeError("Latitude and Longitude not found")
+        raise TypeError("Latitude or Longitude not found")
 
     return df
 
@@ -630,13 +623,13 @@ def remove_by_missing_pct(
         df: pd.DataFrame,
         col_thresholds: dict[str, float]={},
         default_threshold: float=0.8
-) -> pd.DataFrame:
+) -> (pd.DataFrame, list):
     """
-    Remove columns with too much missing, according to thresholds
+    Remove columns with too much missing, according to thresholds, and return the col name to drop
     :param df: raw data frame
     :param col_thresholds: dict of column names to threshold
     :param default_threshold: default threshold to use for missing columns
-    :return: pandas DataFrame
+    :return: (pandas DataFrame, list)
     """
     missing_frac = df.isna().mean()
     thresh_series = pd.Series(default_threshold, index=df.columns, dtype=float)
@@ -649,7 +642,7 @@ def remove_by_missing_pct(
     to_drop = missing_frac[missing_frac > thresh_series].index.tolist()
     df = df.drop(columns=to_drop)
 
-    return df
+    return df, to_drop
 
 
 def save_file(
@@ -686,7 +679,65 @@ def pre_process(
     """
     Pre-process raw data
     :param df: raw data frame
-    :return: ()
+    :param kwargs:
+        Optional keyword arguments:
+        train_data : bool, default=True
+            Whether dealing with training data or test data
+        col_drop: list, default=[]
+            List of columns to drop
+        email_col: str, default="ListAgentEmail"
+            Email column name
+        new_email_cols: str, default="EmailDomain"
+            new Email column name
+        price_col: str, default="ClosePrice"
+            Price column name
+        upper_price_pct: float, default=0.995
+            upper bound for price
+        lower_price_pct: float, default=0.005
+            lower bound for price
+        positive_col_list: list, default=[]
+            List of columns with positive constraints
+        non_negative_col_list: list, default=[]
+            List of columns with non-negative constraints
+        lat_min: float, default=32.5
+            Minimum latitude
+        lat_max: float, default=42.0
+            Maximum latitude
+        long_min: float, default=-124.5
+            Minimum longitude
+        long_max: float, default=-114.0
+            Maximum longitude
+        col_thresholds: dict, default={}
+            dict of column names and its missing pct thresholds
+        default_threshold: float, default=0.8
+            Default threshold to use for missing columns
+        flag_col_list: list, default=["Levels", "Flooring"]
+            List of columns need to do a binary-flag encoding
+        yn_col_list: list, default=["AttachedGarageYN", "ViewYN", "NewConstructionYN", "PoolPrivateYN", "FireplaceYN"]
+            list of binary column names
+        col_fill_by_col_ref_mode_list: list, default=["CoListOfficeName", "MLSAreaMajor", "BuyerOfficeAOR", "BuyerOfficeName", "EmailDomain", "BuyerAgentAOR", "ListAgentAOR"]
+            list of column names need to fill by refence column mode
+        col_ref: str, default="City"
+            Reference column name
+        col_fill_by_knn_mode_list:list, default=["ElementarySchool", "MiddleOrJuniorSchool", "HighSchool", "HighSchoolDistrict"]
+            list of column names need to fill by knn mode
+        knn_col_ref_list: list, default=["Longitude", "Latitude"]
+            list of column names use to conduct knn
+        knn_k: int, default=3
+            number of neighbors to use for knn
+        knn_model: NearestNeighbors, default=None
+            pre_trained NearestNeighbors model
+        num_clusters: int, default=10
+            Number of clusters to form in k-prototypes
+        k_prototypes_model: KPrototypes, default=None
+            pre_trained KPrototypes model
+        random_state: float, default=42
+            random seed
+        save_name: str, default="processed"
+            Name of output folder
+        save: bool, default=True
+            Save processed data
+    :return: (pd.DataFrame, NearestNeighbors,  KPrototypes, list)
     """
     train_data = kwargs.pop("train_data", True)
     col_drop_list = kwargs.pop("col_drop", [])
@@ -740,7 +791,7 @@ def pre_process(
                                 col_list=col_drop_list)
 
         # Remove missing col by pct
-        df_clean = remove_by_missing_pct(df_clean,
+        df_clean, col_drop_list = remove_by_missing_pct(df_clean,
                                          col_thresholds=col_thresholds,
                                          default_threshold=default_threshold)
     else:
@@ -816,7 +867,7 @@ def pre_process(
                   data_type="train" if train_data else "test")
 
 
-    return df_clean, knn_model, k_prototypes_model
+    return df_clean, knn_model, k_prototypes_model, col_drop_list
 
 if __name__ == '__main__':
     df = load_csvs_from_ftp_to_df(provided_local_dir="./")
@@ -826,9 +877,11 @@ if __name__ == '__main__':
                          "LotSizeArea",
                          "LotSizeSquareFeet"]
     non_negative_col_list = ["ParkingTotal"]
-    df_clean = pre_process(df,
-                           positive_col_list=positive_col_list,
-                           non_negative_col_list=non_negative_col_list,
-                           knn_k=3)
+    df_clean, knn_model, k_prototypes_model, col_drop_list = pre_process(df,
+                                                                         positive_col_list=positive_col_list,
+                                                                         non_negative_col_list=non_negative_col_list,
+                                                                         knn_k=3,
+                                                                         num_clusters=25)
     quality_summary_table = data_quality_summary(df_clean)
     print(quality_summary_table.sort_values(by=["missing_%"], ascending=False))
+    print(col_drop_list)
