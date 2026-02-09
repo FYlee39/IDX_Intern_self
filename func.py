@@ -93,7 +93,7 @@ def load_csvs_from_ftp_to_df(
         combined = pd.concat(dfs, ignore_index=True)
 
     elif provided_local_dir:
-        return read_csvs(date_range=date_range, year=year, prefix=prefix)
+        combined = read_csvs(date_range=date_range, year=year, prefix=prefix)
 
     else:
         pandas_read_csv_kwargs = pandas_read_csv_kwargs or {}
@@ -132,7 +132,8 @@ def load_csvs_from_ftp_to_df(
                 frames.append(df)
 
         combined = pd.concat(frames, ignore_index=True, sort=False)
-    return combined[(combined["PropertyType"] == "Residential") & (combined["PropertySubType"] == "SingleFamilyResidence")]
+        combined = combined[(combined["PropertyType"] == "Residential") & (combined["PropertySubType"] == "SingleFamilyResidence")]
+    return combined.drop(columns=["PropertyType", "PropertySubType"])
 
 
 def read_csvs(
