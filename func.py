@@ -9,6 +9,7 @@ import pickle
 from sklearn.neighbors import NearestNeighbors
 from kmodes.kprototypes import KPrototypes
 import os
+from sklearn.preprocessing import RobustScaler, StandardScaler
 
 
 def load_csvs_from_ftp_to_df(
@@ -392,8 +393,10 @@ def get_cluster_through_k_prototypes(
         random_state=42,
         n_init: int=10,
         inits: list[str]=["Cao", "Huang", "random"],
-        model: KPrototypes=None
-) -> (pd.DataFrame, KPrototypes):
+        model: KPrototypes=None,
+        scaler_method: str="robust",
+        scaler=None,
+) -> (pd.DataFrame, KPrototypes, object):
     """
     Using k-prototypes to cluster data
     :param df: raw data frame
@@ -405,7 +408,9 @@ def get_cluster_through_k_prototypes(
     :param n_init: number of init clusters
     :param inits: methods for initialization
     :param model: existed model to use
-    :return: pandas DataFrame, KPrototypes
+    :param scaler_method: method for scaling
+    :param scaler: scaler to use
+    :return: pandas DataFrame, KPrototypes, scaler
     """
     if num_cols is None and cat_cols is None:
         raise ValueError("num_cols and cat_cols cannot be None at the same time")
@@ -419,9 +424,14 @@ def get_cluster_through_k_prototypes(
     if X.isna().any().any():
         raise(ValueError("NaN values not allowed"))
 
-    X_np = X.to_numpy()
+    cat_idx = list(range(len(num_cols), len(num_cols) + len(cat_cols)))
 
-    cat_idx = [X.columns.get_loc(c) for c in cat_cols]
+    # Scaler before the clustering
+    X_c, scaler = normalize_df(X,
+                       num_col_list=num_cols,
+                       cat_col_list=cat_cols,
+                       method=scaler_method,
+                       scaler=scaler)
 
     if model:
         # Testing data
@@ -434,17 +444,18 @@ def get_cluster_through_k_prototypes(
                     n_clusters=n_clusters,
                     init=init,
                     n_init=n_init,
-                    verbose=0,
+                    verbose=1,
+                    max_iter=100,
                     random_state=random_state
                 )
-                model.fit(X_np, categorical=cat_idx)
+                model.fit(X_c, categorical=cat_idx)
                 break
             except ValueError as e:
                 print(e)
 
-    labels = model.predict(X_np, categorical=cat_idx)
+    labels = model.predict(X_c, categorical=cat_idx)
     df["cluster"] = labels
-    return df, model
+    return df, model, scaler
 
 
 def fill_na_by_cluster(
@@ -454,7 +465,7 @@ def fill_na_by_cluster(
         num_clusters: int=25,
         random_state=42,
         **kwargs
-) -> (pd.DataFrame, object):
+) -> (pd.DataFrame, object, object):
     """
     Clustering the data according to the reference column by method, then fill the na with fill_val
     :param df: raw data frame
@@ -472,12 +483,18 @@ def fill_na_by_cluster(
             Method to cluster
         model: object, default=None
             existed model to use
-    :return: (pandas DataFrame, model)
+        scaler_method: str, default="robust
+            method for scaling
+        scaler: object, default=None
+            scaler to use
+    :return: (pandas DataFrame, model, scaler)
     """
     fill_method_num = kwargs.pop("fill_method_num", "median")
     fill_method_cat = kwargs.pop("fill_method_cat", "mode")
     method = kwargs.pop("method", "k-prototypes")
     model = kwargs.pop("model", None)
+    scaler_method = kwargs.pop("scaler_method", "robust")
+    scaler = kwargs.pop("scaler", None)
 
     if kwargs:
         raise TypeError(f"Unexpected keyword arguments: {kwargs}")
@@ -488,12 +505,14 @@ def fill_na_by_cluster(
         num_cols = df_copy.select_dtypes(include="number").columns.tolist()
         num_reference_col_list = list(set(num_cols) & set(reference_col_list))
 
-        df_copy, model = get_cluster_through_k_prototypes(df=df_copy,
-                                                   reference_col_list=reference_col_list,
-                                                   num_cols=num_reference_col_list,
-                                                   n_clusters=num_clusters,
-                                                   random_state=random_state,
-                                                   model=model)
+        df_copy, model, scaler = get_cluster_through_k_prototypes(df=df_copy,
+                                                          reference_col_list=reference_col_list,
+                                                          num_cols=num_reference_col_list,
+                                                          n_clusters=num_clusters,
+                                                          random_state=random_state,
+                                                          model=model,
+                                                          scaler_method=scaler_method,
+                                                          scaler=scaler)
     else:
         raise TypeError(f"Unexpected clustering method: {method}")
 
@@ -507,7 +526,7 @@ def fill_na_by_cluster(
             fill_num=fill_method_num,
         )
 
-    return df_copy.drop(["cluster"], axis=1), model
+    return df_copy.drop(["cluster"], axis=1), model, scaler
 
 
 def drop_columns(
@@ -682,6 +701,45 @@ def remove_duplicate(
     """
     return df.drop_duplicates()
 
+
+def normalize_df(
+        df: pd.DataFrame,
+        num_col_list: list=None,
+        cat_col_list: list=None,
+        method:str="robust",
+        scaler=None
+):
+    """
+    Normalize data frame
+    :param df: raw data frame
+    :param num_col_list: list of column names need to be normalized
+    :param cat_col_list: list of categorical column names
+    :param method: method for normalization
+    :param scaler: scaler to use
+    :return: normalized ndarray, scaler
+    """
+    if num_col_list is None:
+        num_col_list = df.select_dtypes(include="number").columns.tolist()
+    x_n = df[num_col_list].to_numpy()
+    if cat_col_list is None:
+        cat_col_list = df.select_dtypes(include=["object", "category"]).columns.tolist()
+    x_c = df[cat_col_list].astype(str).to_numpy()
+    if scaler is None:
+        if method == "robust":
+            scaler = RobustScaler()
+        elif method == "standard":
+            scaler = StandardScaler()
+        else:
+            raise ValueError(f"method not supported: {method}")
+
+        scaler.fit(x_n)
+    else:
+        pass
+    x_n_c = scaler.transform(x_n)
+    X_c = np.hstack([x_n_c, x_c])
+    return X_c, scaler
+
+
 def pre_process(
         df: pd.DataFrame,
         **kwargs
@@ -744,6 +802,10 @@ def pre_process(
             pre_trained KPrototypes model
         random_state: float, default=42
             random seed
+        scaler_method: str, default="robust
+            method for scaling
+        scaler: object, default=None
+            scaler to use
         save_name: str, default="processed"
             Name of output folder
         save: bool, default=True
@@ -789,6 +851,8 @@ def pre_process(
     num_clusters = kwargs.pop("num_clusters", 10)
     k_prototypes_model = kwargs.pop("k_prototypes_model", None)
     random_state = kwargs.pop("random_state", 42)
+    scaler_method = kwargs.pop("scaler_method", "robust")
+    scaler = kwargs.pop("scaler", None)
     save_name = kwargs.pop("save_name", "processed")
     save = kwargs.pop("save", True)
 
@@ -866,14 +930,16 @@ def pre_process(
     # For other variables, clustering according to all variables, then fill the na
     quality_summary_table = data_quality_summary(df_clean)
     col_need_to_fill_na = quality_summary_table[quality_summary_table["num_missing"] > 0]["column"]
-    reference_col_list = quality_summary_table[quality_summary_table["num_missing"] == 0]["column"]
-    df_clean, k_prototypes_model = fill_na_by_cluster(df=df_clean,
-                                  target_col_list=col_need_to_fill_na,
-                                  reference_col_list=reference_col_list,
-                                  method="k-prototypes",
-                                  num_clusters=num_clusters,
-                                  random_state=random_state,
-                                  model=k_prototypes_model)
+    reference_col_list = quality_summary_table[quality_summary_table["num_missing"] == 0]["column"].drop(columns=price_col, errors="ignore")
+    df_clean, k_prototypes_model, scaler = fill_na_by_cluster(df=df_clean,
+                                                      target_col_list=col_need_to_fill_na,
+                                                      reference_col_list=reference_col_list,
+                                                      method="k-prototypes",
+                                                      num_clusters=num_clusters,
+                                                      random_state=random_state,
+                                                      model=k_prototypes_model,
+                                                      scaler_method=scaler_method,
+                                                      scaler=scaler)
 
     if save:
         save_file(df_clean,
@@ -895,7 +961,7 @@ if __name__ == '__main__':
                                                                          positive_col_list=positive_col_list,
                                                                          non_negative_col_list=non_negative_col_list,
                                                                          knn_k=3,
-                                                                         num_clusters=25)
+                                                                         num_clusters=10)
     quality_summary_table = data_quality_summary(df_clean)
     print(quality_summary_table.sort_values(by=["missing_%"], ascending=False))
     print(col_drop_list)
