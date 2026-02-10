@@ -10,6 +10,9 @@ from sklearn.neighbors import NearestNeighbors
 from kmodes.kprototypes import KPrototypes
 import os
 from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+
 
 
 def load_csvs_from_ftp_to_df(
@@ -384,6 +387,66 @@ def knn_impute_latlon(
     return df, model
 
 
+def get_cluster_through_k_means(
+        df: pd.DataFrame,
+        reference_col_list: list[str],
+        num_cols: list[str] = None,
+        cat_cols: list[str] = None,
+        n_clusters: int = 25,
+        random_state=42,
+        model: KMeans = None,
+        scaler_method: str = "robust",
+        scaler=None,
+) -> (pd.DataFrame, KMeans, object):
+        """
+        Using k-means to cluster data
+        :param df: raw data frame
+        :param reference_col_list: reference column used to compute distance
+        :param num_cols: list of column names
+        :param cat_cols: list of column names
+        :param n_clusters: number of clusters
+        :param random_state: random seed
+        :param model: existed model to use
+        :param scaler_method: method for scaling
+        :param scaler: scaler to use
+        :return: pandas DataFrame, KMeans, scaler
+        """
+        if num_cols is None and cat_cols is None:
+            raise ValueError("num_cols and cat_cols cannot be None at the same time")
+        if num_cols is None:
+            num_cols = [x for x in reference_col_list if x not in cat_cols]
+
+        X = df[num_cols].copy()
+
+        if X.isna().any().any():
+            raise (ValueError("NaN values not allowed"))
+
+        # Scaler before the clustering
+        X_c, scaler = normalize_df(X,
+                                   num_col_list=num_cols,
+                                   method=scaler_method,
+                                   scaler=scaler,
+                                   num_only=True)
+
+        if model:
+            # Testing data
+            pass
+        else:
+            # Training data
+            try:
+                    model = KMeans(
+                        n_clusters=n_clusters,
+                        random_state=random_state
+                    )
+                    model.fit(X_c)
+            except ValueError as e:
+                print(e)
+
+        labels = model.predict(X_c)
+        df["cluster"] = labels
+        return df, model, scaler
+
+
 def get_cluster_through_k_prototypes(
         df: pd.DataFrame,
         reference_col_list: list[str],
@@ -513,6 +576,18 @@ def fill_na_by_cluster(
                                                           model=model,
                                                           scaler_method=scaler_method,
                                                           scaler=scaler)
+    elif method == "k-means":
+        num_cols = df_copy.select_dtypes(include="number").columns.tolist()
+        num_reference_col_list = list(set(num_cols) & set(reference_col_list))
+        df_copy, model, scaler = get_cluster_through_k_means(df=df_copy,
+                                                             reference_col_list=reference_col_list,
+                                                             num_cols=num_reference_col_list,
+                                                             n_clusters=num_clusters,
+                                                             random_state=random_state,
+                                                             model=model,
+                                                             scaler_method=scaler_method,
+                                                             scaler=scaler)
+
     else:
         raise TypeError(f"Unexpected clustering method: {method}")
 
@@ -707,7 +782,8 @@ def normalize_df(
         num_col_list: list=None,
         cat_col_list: list=None,
         method:str="robust",
-        scaler=None
+        scaler=None,
+        num_only=False,
 ):
     """
     Normalize data frame
@@ -716,14 +792,18 @@ def normalize_df(
     :param cat_col_list: list of categorical column names
     :param method: method for normalization
     :param scaler: scaler to use
+    :param num_only: whether to only normalize numeric columns
     :return: normalized ndarray, scaler
     """
     if num_col_list is None:
         num_col_list = df.select_dtypes(include="number").columns.tolist()
     x_n = df[num_col_list].to_numpy()
-    if cat_col_list is None:
-        cat_col_list = df.select_dtypes(include=["object", "category"]).columns.tolist()
-    x_c = df[cat_col_list].astype(str).to_numpy()
+    if num_only:
+        pass
+    else:
+        if cat_col_list is None:
+            cat_col_list = df.select_dtypes(include=["object", "category"]).columns.tolist()
+        x_c = df[cat_col_list].astype(str).to_numpy()
     if scaler is None:
         if method == "robust":
             scaler = RobustScaler()
@@ -736,8 +816,37 @@ def normalize_df(
     else:
         pass
     x_n_c = scaler.transform(x_n)
-    X_c = np.hstack([x_n_c, x_c])
+    X_c = x_n_c if num_only else np.hstack([x_n_c, x_c])
     return X_c, scaler
+
+
+def recode_levels_df_apply(df,
+                           tar_col="Levels",
+                           dst_col="Levels_final"):
+    """
+    Recode target column
+    :param df: raw data frame
+    :param tar_col: target column name
+    :param dst_col: final column name
+    :return: pandas DataFrame
+    """
+    def recode(x):
+        if pd.isna(x):
+            return "Other"
+        if "ThreeOrMore" in x:
+            return "ThreeOrMore"
+        elif "Two" in x:
+            return "Two"
+        elif "One" in x:
+            return "One"
+        elif "MultiSplit" in x:
+            return "MultiSplit"
+        else:
+            return "Other"
+
+    df[dst_col] = df[tar_col].apply(recode)
+
+    return df.drop(columns=[tar_col])
 
 
 def pre_process(
@@ -798,8 +907,10 @@ def pre_process(
             pre_trained NearestNeighbors model
         num_clusters: int, default=10
             Number of clusters to form in k-prototypes
-        k_prototypes_model: KPrototypes, default=None
-            pre_trained KPrototypes model
+        clustering_method: str, default="k-means
+            clustering method
+        clustering_model: object, default=None
+            pre_trained clustering model
         random_state: float, default=42
             random seed
         scaler_method: str, default="robust
@@ -849,7 +960,8 @@ def pre_process(
     knn_k = kwargs.pop("knn_k", 3)
     knn_model = kwargs.pop("knn_model", None)
     num_clusters = kwargs.pop("num_clusters", 10)
-    k_prototypes_model = kwargs.pop("k_prototypes_model", None)
+    clustering_method = kwargs.pop("clustering_method", "k-means")
+    clustering_model = kwargs.pop("clustering_model", None)
     random_state = kwargs.pop("random_state", 42)
     scaler_method = kwargs.pop("scaler_method", "robust")
     scaler = kwargs.pop("scaler", None)
@@ -907,8 +1019,10 @@ def pre_process(
 
 
     ### Handling missing
+    #For "Levels", rencode it
+    df_clean = recode_levels_df_apply(df_clean)
 
-    # For "Levels", "Flooring", using binary flag, fill the na with false
+    # For "Flooring", using binary flag, fill the na with false
     df_clean = create_flag(df_clean,
                            target_col_list=flag_col_list)
 
@@ -931,20 +1045,23 @@ def pre_process(
     quality_summary_table = data_quality_summary(df_clean)
     col_need_to_fill_na = quality_summary_table[quality_summary_table["num_missing"] > 0]["column"]
     reference_col_list = quality_summary_table[quality_summary_table["num_missing"] == 0]["column"].drop(columns=price_col, errors="ignore")
-    df_clean, k_prototypes_model, scaler = fill_na_by_cluster(df=df_clean,
+    df_clean, clustering_model, scaler = fill_na_by_cluster(df=df_clean,
                                                       target_col_list=col_need_to_fill_na,
                                                       reference_col_list=reference_col_list,
-                                                      method="k-prototypes",
+                                                      method=clustering_method,
                                                       num_clusters=num_clusters,
                                                       random_state=random_state,
-                                                      model=k_prototypes_model,
+                                                      model=clustering_model,
                                                       scaler_method=scaler_method,
                                                       scaler=scaler)
 
     if save:
         save_file(df_clean,
                   save_name=save_name,
-                  data_type="train" if train_data else "test")
+                  data_type="train" if train_data else "test",
+                  model_dict={"knn_model": knn_model,
+                              "clustering_model": clustering_model,
+                              "scaler": scaler})
 
 
     return df_clean, knn_model, k_prototypes_model, col_drop_list
