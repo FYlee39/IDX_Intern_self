@@ -741,14 +741,16 @@ def remove_by_missing_pct(
 
 
 def save_file(
-        df: pd.DataFrame,
+        train_df: pd.DataFrame,
+        test_df: pd.DataFrame,
         model_dict: dict=None,
         save_name: str="processed",
         data_type: str="train"
 ) -> None:
     """
     Save raw data frame to file
-    :param df: raw data frame
+    :param train_df: raw data frame
+    :param test_df: raw data frame
     :param model_dict: dict of model needed to be saved
     :param save_name: file name
     :param data_type: data type (train, test)
@@ -760,7 +762,9 @@ def save_file(
         i += 1
     os.mkdir(save_name)
     file_name = data_type + "_data"
-    df.to_csv(save_name + "/" + file_name +  ".csv", index=False)
+    train_df.to_csv(save_name + "/" + file_name +  ".csv", index=False)
+    if test_df is not None:
+        test_df.to_csv(save_name + "/" + "test_data" +  ".csv", index=False)
     for name, model in model_dict.items():
         with open(save_name + "/" + name + ".pkl", "wb") as f:
             pickle.dump(model, f)
