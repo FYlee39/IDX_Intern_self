@@ -11,8 +11,7 @@ from kmodes.kprototypes import KPrototypes
 import os
 from sklearn.preprocessing import RobustScaler, StandardScaler
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-
+from kmedoids import KMedoids
 
 
 def load_csvs_from_ftp_to_df(
@@ -447,6 +446,70 @@ def get_cluster_through_k_means(
         return df, model, scaler
 
 
+def get_cluster_through_k_medoids(
+        df: pd.DataFrame,
+        reference_col_list: list[str],
+        num_cols: list[str] = None,
+        cat_cols: list[str] = None,
+        n_clusters: int = 25,
+        random_state=42,
+        model: KMedoids = None,
+        scaler_method: str = "robust",
+        scaler=None,
+) -> (pd.DataFrame, KMedoids, object):
+    """
+    Using k-medoids to cluster data
+    :param df: raw data frame
+    :param reference_col_list: reference column used to compute distance
+    :param num_cols: list of column names
+    :param cat_cols: list of column names
+    :param n_clusters: number of clusters
+    :param random_state: random seed
+    :param model: existed model to use
+    :param scaler_method: method for scaling
+    :param scaler: scaler to use
+    :return: pandas DataFrame, KMedoids, scaler
+    """
+    if num_cols is None and cat_cols is None:
+        raise ValueError("num_cols and cat_cols cannot be None at the same time")
+    if num_cols is None:
+        num_cols = [x for x in reference_col_list if x not in cat_cols]
+
+    X = df[num_cols].copy()
+
+    if X.isna().any().any():
+        raise (ValueError("NaN values not allowed"))
+
+    # Scaler before the clustering
+    X_c, scaler = normalize_df(X,
+                               num_col_list=num_cols,
+                               method=scaler_method,
+                               scaler=scaler,
+                               num_only=True)
+
+    if model:
+        # Testing data
+        pass
+    else:
+        # Training data
+        try:
+
+            model = KMedoids(
+                n_clusters=n_clusters,
+                metric="euclidean",
+                method="fasterpam",
+                random_state=random_state
+            )
+
+            model.fit(X_c)
+        except ValueError as e:
+            print(e)
+
+    labels = model.predict(X_c)
+    df["cluster"] = labels
+    return df, model, scaler
+
+
 def get_cluster_through_k_prototypes(
         df: pd.DataFrame,
         reference_col_list: list[str],
@@ -580,6 +643,17 @@ def fill_na_by_cluster(
         num_cols = df_copy.select_dtypes(include="number").columns.tolist()
         num_reference_col_list = list(set(num_cols) & set(reference_col_list))
         df_copy, model, scaler = get_cluster_through_k_means(df=df_copy,
+                                                             reference_col_list=reference_col_list,
+                                                             num_cols=num_reference_col_list,
+                                                             n_clusters=num_clusters,
+                                                             random_state=random_state,
+                                                             model=model,
+                                                             scaler_method=scaler_method,
+                                                             scaler=scaler)
+    elif method == "k-medoids":
+        num_cols = df_copy.select_dtypes(include="number").columns.tolist()
+        num_reference_col_list = list(set(num_cols) & set(reference_col_list))
+        df_copy, model, scaler = get_cluster_through_k_medoids(df=df_copy,
                                                              reference_col_list=reference_col_list,
                                                              num_cols=num_reference_col_list,
                                                              n_clusters=num_clusters,
