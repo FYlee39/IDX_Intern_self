@@ -308,6 +308,7 @@ def knn_impute_latlon(
         metric="haversine",
         k: int=3,
         model=None,
+        train_df_ref=None,
 ) -> (pd.DataFrame, NearestNeighbors):
     """
     KNN imputation using Haversine distance on (lat, lon) in radians.
@@ -319,7 +320,8 @@ def knn_impute_latlon(
     :param metric: distance metric
     :param k: number of nearest neighbors
     :param model: NearestNeighbors model
-    :return: pandas DataFrame
+    :param train_df_ref: pandas DataFrame
+    :return: pandas DataFrame, NearestNeighbors, pandas DataFrame
     """
     target_col_list = list(target_col_list)
 
@@ -328,6 +330,8 @@ def knn_impute_latlon(
     coords = np.radians(df.loc[complete_coord_idx, ref_col_List].astype(float).values)
 
     if model is None:
+        # Copy train df for future reference
+        train_df_ref = df.copy()
         # Fit KNN model
         model = NearestNeighbors(n_neighbors=k, metric=metric)
         model.fit(coords)
@@ -362,7 +366,7 @@ def knn_impute_latlon(
 
             for r in miss_rows:
                 p = pos_map[r]
-                vals = df[col].iloc[idx[p]]
+                vals = train_df_ref[col].iloc[idx[p]]
 
                 if is_num:
                     fill = vals.mean(dropna=True)
@@ -383,7 +387,7 @@ def knn_impute_latlon(
         is_num = pd.api.types.is_numeric_dtype(df[col])
         df.loc[no_ref & df[col].isna(), col] = df[col].mean() if is_num else df[col].mode(dropna=True).iloc[0]
 
-    return df, model
+    return df, model, train_df_ref
 
 
 def get_cluster_through_k_means(
@@ -815,34 +819,34 @@ def remove_by_missing_pct(
 
 
 def save_file(
-        train_df: pd.DataFrame,
-        test_df: pd.DataFrame,
+        df: pd.DataFrame,
         model_dict: dict=None,
         save_name: str="processed",
         data_type: str="train"
 ) -> None:
     """
     Save raw data frame to file
-    :param train_df: raw data frame
-    :param test_df: raw data frame
+    :param df: raw data frame
     :param model_dict: dict of model needed to be saved
     :param save_name: file name
     :param data_type: data type (train, test)
     :return: None
     """
     i = 1
-    while os.path.exists(save_name):
-        save_name = save_name + str(i)
-        i += 1
-    os.mkdir(save_name)
-    file_name = data_type + "_data"
-    train_df.to_csv(save_name + "/" + file_name +  ".csv", index=False)
-    if test_df is not None:
-        test_df.to_csv(save_name + "/" + "test_data" +  ".csv", index=False)
-    for name, model in model_dict.items():
-        with open(save_name + "/" + name + ".pkl", "wb") as f:
-            pickle.dump(model, f)
-
+    if data_type == "train":
+        while os.path.exists(save_name):
+            i += 1
+            save_name = save_name + str(i)
+        os.mkdir(save_name)
+        file_name = data_type + "_data"
+        df.to_csv(save_name + "/" + file_name +  ".csv", index=False)
+        for name, model in model_dict.items():
+            with open(save_name + "/" + name + ".pkl", "wb") as f:
+                pickle.dump(model, f)
+    else:
+        if os.path.exists(save_name):
+            file_name = data_type + "_data"
+            df.to_csv(save_name + "/" + file_name + ".csv", index=False)
 
 def remove_duplicate(
         df: pd.DataFrame,
@@ -983,6 +987,8 @@ def pre_process(
             number of neighbors to use for knn
         knn_model: NearestNeighbors, default=None
             pre_trained NearestNeighbors model
+        train_df_ref: pandas DataFrame, default=None
+            Pandas DataFrame containing training data for knn reference
         num_clusters: int, default=10
             Number of clusters to form in k-prototypes
         clustering_method: str, default="k-means
@@ -1037,6 +1043,7 @@ def pre_process(
     knn_col_ref_list = kwargs.pop("knn_col_ref_list", ["Longitude", "Latitude"])
     knn_k = kwargs.pop("knn_k", 3)
     knn_model = kwargs.pop("knn_model", None)
+    train_df_ref = kwargs.pop("train_df_ref", None)
     num_clusters = kwargs.pop("num_clusters", 10)
     clustering_method = kwargs.pop("clustering_method", "k-means")
     clustering_model = kwargs.pop("clustering_model", None)
@@ -1059,9 +1066,14 @@ def pre_process(
         df_clean, col_drop_list = remove_by_missing_pct(df_clean,
                                          col_thresholds=col_thresholds,
                                          default_threshold=default_threshold)
+        # Remove single-value columns
+
+        single_value_cols = df_clean.columns[df_clean.nunique(dropna=True) <= 1].tolist()
+        col_drop_list = col_drop_list + single_value_cols
+        df_clean = df_clean.drop(columns=single_value_cols)
     else:
-        if knn_model is None or k_prototypes_model is None:
-            raise ValueError("knn_model and k_prototypes_model must be specified when processed test data")
+        if knn_model is None or clustering_model is None:
+            raise ValueError("knn_model and clustering_model must be specified when processed test data")
 
         # Remove designated columns
         df_clean = drop_columns(df_clean,
@@ -1110,11 +1122,12 @@ def pre_process(
                                  reference_col=col_ref)
 
     # For school-related variables, Nearest-neighbor assignment through longitude and latitude
-    df_clean, knn_model = knn_impute_latlon(df_clean,
-                                            target_col_list=col_fill_by_knn_mode_list,
-                                            ref_col_List=knn_col_ref_list,
-                                            k=knn_k,
-                                            model=knn_model)
+    df_clean, knn_model, train_df_ref = knn_impute_latlon(df_clean,
+                                                          target_col_list=col_fill_by_knn_mode_list,
+                                                          ref_col_List=knn_col_ref_list,
+                                                          k=knn_k,
+                                                          model=knn_model,
+                                                          train_df_ref=train_df_ref)
 
     # For "YN" variables, fill the na with False
     df_clean[yn_col_list] = df_clean[yn_col_list].fillna(False)
@@ -1124,14 +1137,14 @@ def pre_process(
     col_need_to_fill_na = quality_summary_table[quality_summary_table["num_missing"] > 0]["column"]
     reference_col_list = quality_summary_table[quality_summary_table["num_missing"] == 0]["column"].drop(columns=price_col, errors="ignore")
     df_clean, clustering_model, scaler = fill_na_by_cluster(df=df_clean,
-                                                      target_col_list=col_need_to_fill_na,
-                                                      reference_col_list=reference_col_list,
-                                                      method=clustering_method,
-                                                      num_clusters=num_clusters,
-                                                      random_state=random_state,
-                                                      model=clustering_model,
-                                                      scaler_method=scaler_method,
-                                                      scaler=scaler)
+                                                            target_col_list=col_need_to_fill_na,
+                                                            reference_col_list=reference_col_list,
+                                                            method=clustering_method,
+                                                            num_clusters=num_clusters,
+                                                            random_state=random_state,
+                                                            model=clustering_model,
+                                                            scaler_method=scaler_method,
+                                                            scaler=scaler)
 
     if save:
         save_file(df_clean,
@@ -1142,21 +1155,4 @@ def pre_process(
                               "scaler": scaler})
 
 
-    return df_clean, knn_model, k_prototypes_model, col_drop_list
-
-if __name__ == '__main__':
-    df = load_csvs_from_ftp_to_df(provided_local_dir="./")
-    positive_col_list = ["BedroomsTotal",
-                         "BathroomsTotalInteger",
-                         "LotSizeAcres",
-                         "LotSizeArea",
-                         "LotSizeSquareFeet"]
-    non_negative_col_list = ["ParkingTotal"]
-    df_clean, knn_model, k_prototypes_model, col_drop_list = pre_process(df,
-                                                                         positive_col_list=positive_col_list,
-                                                                         non_negative_col_list=non_negative_col_list,
-                                                                         knn_k=3,
-                                                                         num_clusters=10)
-    quality_summary_table = data_quality_summary(df_clean)
-    print(quality_summary_table.sort_values(by=["missing_%"], ascending=False))
-    print(col_drop_list)
+    return df_clean, knn_model, train_df_ref, clustering_model, col_drop_list, scaler
