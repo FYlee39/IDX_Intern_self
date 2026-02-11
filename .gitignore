@@ -1,3 +1,38 @@
 /california/
-/project.ipynb
-/processed1/
+processed*
+# ------------------------
+# Python cache
+# ------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ------------------------
+# PyCharm / JetBrains
+# ------------------------
+.idea/
+
+# ------------------------
+# Virtual environments
+# ------------------------
+venv/
+.env/
+.venv/
+
+# ------------------------
+# Jupyter
+# ------------------------
+.ipynb_checkpoints/
+
+# ------------------------
+# OS junk
+# ------------------------
+.DS_Store
+Thumbs.db
+
+# ------------------------
+# Logs / temp
+# ------------------------
+*.log
+tmp/
