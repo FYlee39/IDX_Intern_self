@@ -13,6 +13,8 @@ from sklearn.preprocessing import RobustScaler, StandardScaler
 from sklearn.cluster import KMeans
 from kmedoids import KMedoids
 
+from linear_regression import cols_with_na
+
 
 def load_csvs_from_ftp_to_df(
     host: str="ftp.boxgrad.com",
@@ -931,6 +933,29 @@ def recode_levels_df_apply(df,
     return df.drop(columns=[tar_col])
 
 
+def add_missing_indicators(
+        df: pd.DataFrame,
+        col_with_na: list=None,
+) -> (pd.DataFrame, list):
+    """
+    Add missing indicators
+    :param df: raw data frame
+    :param col_with_na: list of column names
+    :return: pandas DataFrame, list
+    """
+    if col_with_na is None:
+        col_with_na = df.columns[df.isna().any()]
+
+    missing_indicators = (
+        df[col_with_na]
+        .isna()
+        .astype(int)
+        .add_suffix("_missing")
+    )
+
+    return pd.concat([df, missing_indicators], axis=1), col_with_na
+
+
 def pre_process(
         df: pd.DataFrame,
         **kwargs
@@ -1005,7 +1030,9 @@ def pre_process(
             Name of output folder
         save: bool, default=True
             Save processed data
-    :return: (pd.DataFrame, NearestNeighbors,  KPrototypes, list)
+        col_with_na: list, default=None
+            List of columns with missing values
+    :return: (pd.DataFrame, NearestNeighbors,  KPrototypes, list, list)
     """
     train_data = kwargs.pop("train_data", True)
     col_drop_list = kwargs.pop("col_drop", [])
@@ -1052,6 +1079,7 @@ def pre_process(
     scaler = kwargs.pop("scaler", None)
     save_name = kwargs.pop("save_name", "processed")
     save = kwargs.pop("save", True)
+    col_with_na = kwargs.pop("col_with_na", None)
 
     df_clean = df.copy()
 
@@ -1109,6 +1137,11 @@ def pre_process(
 
 
     ### Handling missing
+
+    # Add missing indicator
+    df_clean, cols_with_na = add_missing_indicators(df_clean,
+                                                    col_with_na=col_with_na)
+
     #For "Levels", rencode it
     df_clean = recode_levels_df_apply(df_clean)
 
@@ -1155,4 +1188,4 @@ def pre_process(
                               "scaler": scaler})
 
 
-    return df_clean, knn_model, train_df_ref, clustering_model, col_drop_list, scaler
+    return df_clean, knn_model, train_df_ref, clustering_model, col_drop_list, scaler, cols_with_na
