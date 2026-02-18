@@ -268,19 +268,16 @@ def impute_by_cluster(
     df: pd.DataFrame,
     target_col: str,
     cluster_col: str="cluster",
-    fill_cat: str="mode",
-    fill_num: str="median"
+    train_df_cluster_ref: pd.DataFrame=None
 ) -> pd.DataFrame:
     """
     Fill the na by cluster
     :param df: raw data frame
     :param cluster_col: column name of cluster column
     :param target_col: column name of target column
-    :param fill_cat: method for categorical column
-    :param fill_num: method for numerical column
+    :param train_df_cluster_ref: reference DataFrame for imputation
     :return: pandas DataFrame
     """
-    target_type = "num" if pd.api.types.is_numeric_dtype(df[target_col]) else "cat"
     for c in df[cluster_col].unique():
         mask = df[cluster_col] == c
         missing = mask & df[target_col].isna()
@@ -288,28 +285,8 @@ def impute_by_cluster(
         if not missing.any():
             continue
 
-        observed = df.loc[mask & df[target_col].notna(), target_col]
-
-        # Categorical
-        if target_type == "cat":
-            if fill_cat == "mode" and not observed.empty:
-                fill_value = observed.mode().iloc[0]
-            else:
-                fill_value = "Other"
-        # Numerical
-        elif target_type == "num":
-            if observed.empty:
-                fill_value = np.nan
-            elif fill_num == "median":
-                fill_value = observed.median()
-            elif fill_num == "mean":
-                fill_value = observed.mean()
-            elif fill_num == "zero":
-                fill_value = 0
-            else:
-                raise ValueError(f"Unknown fill_num method: {fill_num}")
-        else:
-            raise ValueError("target_type must be 'cat' or 'num'")
+        # impute the value using data from reference df
+        fill_value = train_df_cluster_ref.loc[c, target_col]
 
         df.loc[missing, target_col] = fill_value
 
@@ -620,10 +597,6 @@ def fill_na_by_cluster(
     :param random_state: random seed
     :param kwargs:
         Optional keyword arguments:
-        fill_method_num : str, default="median"
-            Method to fill na for numerical data
-        fill_method_num : str, default="mode"
-            Method to fill na for categorical data
         method : str, default=k-prototypes
             Method to cluster
         model: object, default=None
@@ -632,14 +605,15 @@ def fill_na_by_cluster(
             method for scaling
         scaler: object, default=None
             scaler to use
-    :return: (pandas DataFrame, model, scaler)
+        train_df_cluster_ref: default=None
+            reference df for clustering impute
+    :return:
     """
-    fill_method_num = kwargs.pop("fill_method_num", "median")
-    fill_method_cat = kwargs.pop("fill_method_cat", "mode")
     method = kwargs.pop("method", "k-prototypes")
     model = kwargs.pop("model", None)
     scaler_method = kwargs.pop("scaler_method", "robust")
     scaler = kwargs.pop("scaler", None)
+    train_df_cluster_ref = kwargs.pop("train_df_cluster_ref", None)
 
     if kwargs:
         raise TypeError(f"Unexpected keyword arguments: {kwargs}")
@@ -682,17 +656,40 @@ def fill_na_by_cluster(
     else:
         raise TypeError(f"Unexpected clustering method: {method}")
 
+    if train_df_cluster_ref is None:
+
+        num_cols = df_copy.select_dtypes(include="number").columns
+        cat_cols = df_copy.select_dtypes(exclude="number").columns
+
+        median_part = df_copy.groupby("cluster")[num_cols].median()
+
+        mode_part = (
+            df_copy.groupby("cluster")[cat_cols]
+            .agg(lambda x: x.mode().iloc[0] if not x.mode().empty else np.nan)
+        )
+
+        train_df_cluster_ref = pd.concat([median_part, mode_part], axis=1)
+
+        global_median = df_copy[num_cols].median()
+
+        global_mode = df_copy[cat_cols].apply(
+            lambda x: x.mode().iloc[0] if not x.mode().empty else np.nan
+        )
+
+        global_summary = pd.concat([global_median, global_mode])
+
+        train_df_cluster_ref = train_df_cluster_ref.fillna(global_summary)
+
     for col in target_col_list:
 
         df_copy = impute_by_cluster(
             df_copy,
             cluster_col="cluster",
             target_col=col,
-            fill_cat=fill_method_cat,
-            fill_num=fill_method_num,
+            train_df_cluster_ref=train_df_cluster_ref
         )
 
-    return df_copy.drop(["cluster"], axis=1), model, scaler
+    return df_copy.drop(["cluster"], axis=1), model, scaler, train_df_cluster_ref
 
 
 def drop_columns(
@@ -948,6 +945,33 @@ def recode_levels_df_apply(df,
     return df.drop(columns=[tar_col])
 
 
+def remove_by_zip(
+        df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Remove rows by zip
+    :param df: raw data frame
+    :return: pandas DataFrame
+    """
+    # Extract first 3 digits as ZIP prefix
+    df["ZIP_prefix"] = df["PostalCode"].str[:3]
+
+    # Convert to numeric, invalid become NaN
+    df["ZIP_prefix_num"] = pd.to_numeric(df["ZIP_prefix"], errors="coerce")
+
+    # Valid CA ZIP mask
+    valid_zip_mask = (
+            df["ZIP_prefix_num"].notna() &
+            (df["ZIP_prefix_num"] >= 900) &
+            (df["ZIP_prefix_num"] <= 961)
+    )
+
+    # Apply filter
+    df = df[valid_zip_mask].copy()
+
+    return df.drop(columns=["ZIP_prefix_num"], errors="ignore")
+
+
 def add_missing_indicators(
         df: pd.DataFrame,
         col_with_na: list=None,
@@ -1050,6 +1074,8 @@ def pre_process(
             Save processed data
         col_with_na: list, default=None
             List of columns with missing values
+        train_df_cluster_ref: default=None
+            reference df for clustering imputation
     :return:
     """
     train_data = kwargs.pop("train_data", True)
@@ -1100,6 +1126,7 @@ def pre_process(
     cols_with_na = kwargs.pop("cols_with_na", None)
     reference_col_list = kwargs.pop("reference_col_list", None)
     col_need_to_fill_na = kwargs.pop("col_need_to_fill_na", None)
+    train_df_cluster_ref = kwargs.pop("train_df_cluster_ref", None)
 
     df_clean = df.copy()
 
@@ -1156,6 +1183,10 @@ def pre_process(
                                   lon_max=lon_max)
 
 
+    # Remove row that exceed the range for zipcode
+    df_clean = remove_duplicate(df_clean)
+
+
     ### Handling missing
 
     # Add missing indicator
@@ -1189,15 +1220,16 @@ def pre_process(
     quality_summary_table = data_quality_summary(df_clean)
     col_need_to_fill_na = quality_summary_table[quality_summary_table["num_missing"] > 0]["column"] if col_need_to_fill_na is None else col_need_to_fill_na
     reference_col_list = quality_summary_table[quality_summary_table["num_missing"] == 0]["column"].drop(columns=price_col, errors="ignore") if reference_col_list is None else reference_col_list
-    df_clean, clustering_model, scaler = fill_na_by_cluster(df=df_clean,
-                                                            target_col_list=col_need_to_fill_na,
-                                                            reference_col_list=reference_col_list,
-                                                            method=clustering_method,
-                                                            num_clusters=num_clusters,
-                                                            random_state=random_state,
-                                                            model=clustering_model,
-                                                            scaler_method=scaler_method,
-                                                            scaler=scaler)
+    df_clean, clustering_model, scaler, train_df_cluster_ref = fill_na_by_cluster(df=df_clean,
+                                                                                  target_col_list=col_need_to_fill_na,
+                                                                                  reference_col_list=reference_col_list,
+                                                                                  method=clustering_method,
+                                                                                  num_clusters=num_clusters,
+                                                                                  random_state=random_state,
+                                                                                  model=clustering_model,
+                                                                                  scaler_method=scaler_method,
+                                                                                  scaler=scaler,
+                                                                                  train_df_cluster_ref=train_df_cluster_ref)
 
     if save:
         save_name = save_file(df_clean,
@@ -1208,7 +1240,7 @@ def pre_process(
                               "scaler": scaler})
 
 
-    return df_clean, knn_model, train_df_ref, reference_col_list, clustering_model, col_drop_list, scaler, cols_with_na, save_name
+    return df_clean, knn_model, train_df_ref, reference_col_list, clustering_model, col_drop_list, scaler, cols_with_na, train_df_cluster_ref, save_name
 
 
 def mdape(y_true, y_pred):
