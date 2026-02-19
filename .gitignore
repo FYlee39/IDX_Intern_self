@@ -1,5 +1,6 @@
 /california/
 processed*
+*.csv
 # ------------------------
 # Python cache
 # ------------------------

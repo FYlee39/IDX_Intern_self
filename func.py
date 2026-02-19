@@ -7,7 +7,7 @@ from ftplib import FTP, error_perm
 import io
 from io import BytesIO
 
-from typing import Iterable, Optional, List
+from typing import Iterable, Optional, List, Dict, Any
 
 import sys
 
@@ -19,6 +19,8 @@ from sklearn.cluster import KMeans
 from sklearn.compose import ColumnTransformer, make_column_selector as selector
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import r2_score
+from sklearn.model_selection import GridSearchCV
+from sklearn.base import BaseEstimator
 
 from kmodes.kprototypes import KPrototypes
 
@@ -1186,6 +1188,8 @@ def pre_process(
     # Remove row that exceed the range for zipcode
     df_clean = remove_duplicate(df_clean)
 
+    # Remove extra illogical/impossible values
+    df_clean = df_clean[(df_clean["LotSizeSquareFeet"] <= 217800) & (df_clean["ParkingTotal"] <= 50) & (df_clean["GarageSpaces"] <= 100)]
 
     ### Handling missing
 
@@ -1293,7 +1297,7 @@ def make_model_pipeline(
 
     # target for high card col
     high_cat_pipe = Pipeline([
-        ("te", ce.TargetEncoder(
+            ("te", ce.TargetEncoder(
             smoothing=smoothing,
             min_samples_leaf=min_samples_leaf
         ))
@@ -1382,4 +1386,92 @@ def fit_predict(
         },
         "r2": r2_score(y_test, y_pred),
         "mdape": mdape(y_test, y_pred),
+    }
+
+
+def grid_tune_with_make_model_pipeline(
+        train_df: pd.DataFrame,
+        target_col: str,
+        model,
+        param_grid: Dict[str, Any],
+        col_drop_list: list = None,
+        card_threshold: int = 20,
+        num_scaler: str="robust",
+        smoothing: int=10,
+        min_samples_leaf: int=20,
+        scoring: str="r2",
+        cv: int=5,
+        n_jobs: int=-1,
+        verbose: int=1,
+):
+    """
+    GridSearchCV tuning for pipeline factory.
+    :param train_df: train data
+    :param target_col: target column
+    :param model: model to be used
+    :param param_grid: parameters to tune
+        param_grid keys should be for the final estimator step, e.g.:
+          {"model__alpha": [...], "model__l1_ratio": [...]}
+    :param col_drop_list: columns to be dropped
+    :param card_threshold: threshold between high card and low card
+    :param num_scaler: numerical scaler
+    :param smoothing: smoothing parameter
+    :param min_samples_leaf: minimum number of samples leaf
+    :param scoring: scoring function
+    :param cv: number of folds
+    :param n_jobs: number of jobs
+    :param verbose: verbosity
+    """
+
+    train_df = train_df.drop(columns=col_drop_list, errors="ignore")
+
+    X_train = train_df.drop(columns=[target_col])
+
+    y_train = train_df[target_col]
+
+    num_cols = X_train.select_dtypes(include=np.number).columns.tolist()
+    cat_cols = [c for c in X_train.columns if c not in num_cols]
+
+    nunique = X_train[cat_cols].nunique(dropna=False)
+
+    # split categorical col through card_threshold
+    low_card_cols = nunique[(nunique <= card_threshold)].index.tolist()
+    high_card_cols = nunique[(nunique >= card_threshold)].index.tolist()
+
+    pipe = make_model_pipeline(
+        model=model,
+        num_cols=num_cols,
+        low_card_cols=low_card_cols,
+        high_card_cols=high_card_cols,
+        num_scaler=num_scaler,
+        smoothing=smoothing,
+        min_samples_leaf=min_samples_leaf,
+    )
+
+    gs = GridSearchCV(
+        estimator=pipe,
+        param_grid=param_grid,
+        scoring=scoring,
+        cv=cv,
+        n_jobs=n_jobs,
+        verbose=verbose,
+        refit=True,
+        error_score=np.nan,
+        return_train_score=False,
+    )
+
+    gs.fit(X_train, y_train)
+
+    results_df = (
+        pd.DataFrame(gs.cv_results_)
+        .sort_values("rank_test_score")
+        .reset_index(drop=True)
+    )
+
+    return {
+        "best_pipeline": gs.best_estimator_,
+        "best_params": gs.best_params_,
+        "best_score": gs.best_score_,
+        "results_df": results_df,
+        "grid_object": gs,
     }
