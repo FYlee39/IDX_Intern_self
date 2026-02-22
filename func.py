@@ -18,7 +18,7 @@ from sklearn.preprocessing import RobustScaler, OneHotEncoder, StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.compose import ColumnTransformer, make_column_selector as selector
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, mean_absolute_percentage_error
 from sklearn.model_selection import GridSearchCV
 from sklearn.base import BaseEstimator
 
@@ -1325,7 +1325,6 @@ def fit_predict(
         num_scaler: str="robust",
         smoothing: int=10,
         min_samples_leaf: int=20,
-        log_transform: bool = False,
 ):
     """
     Fit model and predict data
@@ -1338,7 +1337,6 @@ def fit_predict(
     :param num_scaler: numerical scaler
     :param smoothing: smoothing parameter
     :param min_samples_leaf: minimum number of samples leaf
-    :param log_transform: log transform on target col or not
     :return:
     """
     col_drop_list = col_drop_list or []
@@ -1373,9 +1371,8 @@ def fit_predict(
 
     y_pred = pipe.predict(X_test)
 
-    if log_transform:
-        y_pred = np.expm1(y_pred)
-        y_test = np.expm1(y_test)
+    y_pred_exp = np.expm1(y_pred)
+    y_test_exp = np.expm1(y_test)
 
     return {
         "pipe": pipe,
@@ -1384,8 +1381,10 @@ def fit_predict(
             "low_card_ohe": low_card_cols,
             "high_card_te": high_card_cols
         },
-        "r2": r2_score(y_test, y_pred),
-        "mdape": mdape(y_test, y_pred),
+        "R2(log)": r2_score(y_test, y_pred),
+        "R2": r2_score(y_test_exp, y_pred_exp),
+        "MAPE": mean_absolute_percentage_error(y_test_exp, y_pred_exp),
+        "MdAPE": mdape(y_test_exp, y_pred_exp),
     }
 
 
