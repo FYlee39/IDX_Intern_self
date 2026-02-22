@@ -1,17 +1,34 @@
 import pandas as pd
+
 import numpy as np
+
 from ftplib import FTP, error_perm
-from io import BytesIO
-from typing import Iterable, Optional, List
-import sys
+
 import io
+from io import BytesIO
+
+from typing import Iterable, Optional, List, Dict, Any
+
+import sys
+
 import pickle
+
 from sklearn.neighbors import NearestNeighbors
-from kmodes.kprototypes import KPrototypes
-import os
-from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.preprocessing import RobustScaler, OneHotEncoder, StandardScaler
 from sklearn.cluster import KMeans
+from sklearn.compose import ColumnTransformer, make_column_selector as selector
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import r2_score
+from sklearn.model_selection import GridSearchCV
+from sklearn.base import BaseEstimator
+
+from kmodes.kprototypes import KPrototypes
+
+import os
+
 from kmedoids import KMedoids
+
+import category_encoders as ce
 
 
 def load_csvs_from_ftp_to_df(
@@ -253,19 +270,16 @@ def impute_by_cluster(
     df: pd.DataFrame,
     target_col: str,
     cluster_col: str="cluster",
-    fill_cat: str="mode",
-    fill_num: str="median"
+    train_df_cluster_ref: pd.DataFrame=None
 ) -> pd.DataFrame:
     """
     Fill the na by cluster
     :param df: raw data frame
     :param cluster_col: column name of cluster column
     :param target_col: column name of target column
-    :param fill_cat: method for categorical column
-    :param fill_num: method for numerical column
+    :param train_df_cluster_ref: reference DataFrame for imputation
     :return: pandas DataFrame
     """
-    target_type = "num" if pd.api.types.is_numeric_dtype(df[target_col]) else "cat"
     for c in df[cluster_col].unique():
         mask = df[cluster_col] == c
         missing = mask & df[target_col].isna()
@@ -273,28 +287,8 @@ def impute_by_cluster(
         if not missing.any():
             continue
 
-        observed = df.loc[mask & df[target_col].notna(), target_col]
-
-        # Categorical
-        if target_type == "cat":
-            if fill_cat == "mode" and not observed.empty:
-                fill_value = observed.mode().iloc[0]
-            else:
-                fill_value = "Other"
-        # Numerical
-        elif target_type == "num":
-            if observed.empty:
-                fill_value = np.nan
-            elif fill_num == "median":
-                fill_value = observed.median()
-            elif fill_num == "mean":
-                fill_value = observed.mean()
-            elif fill_num == "zero":
-                fill_value = 0
-            else:
-                raise ValueError(f"Unknown fill_num method: {fill_num}")
-        else:
-            raise ValueError("target_type must be 'cat' or 'num'")
+        # impute the value using data from reference df
+        fill_value = train_df_cluster_ref.loc[c, target_col]
 
         df.loc[missing, target_col] = fill_value
 
@@ -605,10 +599,6 @@ def fill_na_by_cluster(
     :param random_state: random seed
     :param kwargs:
         Optional keyword arguments:
-        fill_method_num : str, default="median"
-            Method to fill na for numerical data
-        fill_method_num : str, default="mode"
-            Method to fill na for categorical data
         method : str, default=k-prototypes
             Method to cluster
         model: object, default=None
@@ -617,24 +607,27 @@ def fill_na_by_cluster(
             method for scaling
         scaler: object, default=None
             scaler to use
-    :return: (pandas DataFrame, model, scaler)
+        train_df_cluster_ref: default=None
+            reference df for clustering impute
+    :return:
     """
-    fill_method_num = kwargs.pop("fill_method_num", "median")
-    fill_method_cat = kwargs.pop("fill_method_cat", "mode")
     method = kwargs.pop("method", "k-prototypes")
     model = kwargs.pop("model", None)
     scaler_method = kwargs.pop("scaler_method", "robust")
     scaler = kwargs.pop("scaler", None)
+    train_df_cluster_ref = kwargs.pop("train_df_cluster_ref", None)
 
     if kwargs:
         raise TypeError(f"Unexpected keyword arguments: {kwargs}")
 
     df_copy = df.copy(deep=True)
 
-    if method == "k-prototypes":
-        num_cols = df_copy.select_dtypes(include="number").columns.tolist()
-        num_reference_col_list = list(set(num_cols) & set(reference_col_list))
+    num_cols = df_copy.select_dtypes(include="number").columns.tolist()
+    num_cols = list(map(str, num_cols))
+    reference_col_list = list(map(str, reference_col_list))
+    num_reference_col_list = [col for col in num_cols if col in reference_col_list]
 
+    if method == "k-prototypes":
         df_copy, model, scaler = get_cluster_through_k_prototypes(df=df_copy,
                                                           reference_col_list=reference_col_list,
                                                           num_cols=num_reference_col_list,
@@ -644,8 +637,6 @@ def fill_na_by_cluster(
                                                           scaler_method=scaler_method,
                                                           scaler=scaler)
     elif method == "k-means":
-        num_cols = df_copy.select_dtypes(include="number").columns.tolist()
-        num_reference_col_list = list(set(num_cols) & set(reference_col_list))
         df_copy, model, scaler = get_cluster_through_k_means(df=df_copy,
                                                              reference_col_list=reference_col_list,
                                                              num_cols=num_reference_col_list,
@@ -655,8 +646,6 @@ def fill_na_by_cluster(
                                                              scaler_method=scaler_method,
                                                              scaler=scaler)
     elif method == "k-medoids":
-        num_cols = df_copy.select_dtypes(include="number").columns.tolist()
-        num_reference_col_list = list(set(num_cols) & set(reference_col_list))
         df_copy, model, scaler = get_cluster_through_k_medoids(df=df_copy,
                                                              reference_col_list=reference_col_list,
                                                              num_cols=num_reference_col_list,
@@ -669,17 +658,40 @@ def fill_na_by_cluster(
     else:
         raise TypeError(f"Unexpected clustering method: {method}")
 
+    if train_df_cluster_ref is None:
+
+        num_cols = df_copy.select_dtypes(include="number").columns
+        cat_cols = df_copy.select_dtypes(exclude="number").columns
+
+        median_part = df_copy.groupby("cluster")[num_cols].median()
+
+        mode_part = (
+            df_copy.groupby("cluster")[cat_cols]
+            .agg(lambda x: x.mode().iloc[0] if not x.mode().empty else np.nan)
+        )
+
+        train_df_cluster_ref = pd.concat([median_part, mode_part], axis=1)
+
+        global_median = df_copy[num_cols].median()
+
+        global_mode = df_copy[cat_cols].apply(
+            lambda x: x.mode().iloc[0] if not x.mode().empty else np.nan
+        )
+
+        global_summary = pd.concat([global_median, global_mode])
+
+        train_df_cluster_ref = train_df_cluster_ref.fillna(global_summary)
+
     for col in target_col_list:
 
         df_copy = impute_by_cluster(
             df_copy,
             cluster_col="cluster",
             target_col=col,
-            fill_cat=fill_method_cat,
-            fill_num=fill_method_num,
+            train_df_cluster_ref=train_df_cluster_ref
         )
 
-    return df_copy.drop(["cluster"], axis=1), model, scaler
+    return df_copy.drop(["cluster"], axis=1), model, scaler, train_df_cluster_ref
 
 
 def drop_columns(
@@ -823,7 +835,7 @@ def save_file(
         model_dict: dict=None,
         save_name: str="processed",
         data_type: str="train"
-) -> None:
+) -> str:
     """
     Save raw data frame to file
     :param df: raw data frame
@@ -834,9 +846,11 @@ def save_file(
     """
     i = 1
     if data_type == "train":
-        while os.path.exists(save_name):
+        new_save_name = save_name
+        while os.path.exists(new_save_name):
             i += 1
-            save_name = save_name + str(i)
+            new_save_name = save_name + str(i)
+        save_name = new_save_name
         os.mkdir(save_name)
         file_name = data_type + "_data"
         df.to_csv(save_name + "/" + file_name +  ".csv", index=False)
@@ -847,6 +861,8 @@ def save_file(
         if os.path.exists(save_name):
             file_name = data_type + "_data"
             df.to_csv(save_name + "/" + file_name + ".csv", index=False)
+    return save_name
+
 
 def remove_duplicate(
         df: pd.DataFrame,
@@ -931,10 +947,59 @@ def recode_levels_df_apply(df,
     return df.drop(columns=[tar_col])
 
 
+def remove_by_zip(
+        df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Remove rows by zip
+    :param df: raw data frame
+    :return: pandas DataFrame
+    """
+    # Extract first 3 digits as ZIP prefix
+    df["ZIP_prefix"] = df["PostalCode"].str[:3]
+
+    # Convert to numeric, invalid become NaN
+    df["ZIP_prefix_num"] = pd.to_numeric(df["ZIP_prefix"], errors="coerce")
+
+    # Valid CA ZIP mask
+    valid_zip_mask = (
+            df["ZIP_prefix_num"].notna() &
+            (df["ZIP_prefix_num"] >= 900) &
+            (df["ZIP_prefix_num"] <= 961)
+    )
+
+    # Apply filter
+    df = df[valid_zip_mask].copy()
+
+    return df.drop(columns=["ZIP_prefix_num"], errors="ignore")
+
+
+def add_missing_indicators(
+        df: pd.DataFrame,
+        col_with_na: list=None,
+) -> (pd.DataFrame, list):
+    """
+    Add missing indicators
+    :param df: raw data frame
+    :param col_with_na: list of column names
+    :return: pandas DataFrame, list
+    """
+    if col_with_na is None:
+        col_with_na = df.columns[df.isna().any()]
+
+    missing_indicators = (
+        df[col_with_na]
+        .isna()
+        .astype(int)
+        .add_suffix("_missing")
+    )
+
+    return pd.concat([df, missing_indicators], axis=1), col_with_na
+
+
 def pre_process(
         df: pd.DataFrame,
         **kwargs
-
 ) -> (pd.DataFrame, pd.DataFrame):
     """
     Pre-process raw data
@@ -995,6 +1060,10 @@ def pre_process(
             clustering method
         clustering_model: object, default=None
             pre_trained clustering model
+        reference_col_list: list, default=None
+            List of columns with reference columns used for clustering
+        col_need_to_fill_na: list, default=None
+            List of columns need to fill NaN by clustering
         random_state: float, default=42
             random seed
         scaler_method: str, default="robust
@@ -1005,7 +1074,11 @@ def pre_process(
             Name of output folder
         save: bool, default=True
             Save processed data
-    :return: (pd.DataFrame, NearestNeighbors,  KPrototypes, list)
+        col_with_na: list, default=None
+            List of columns with missing values
+        train_df_cluster_ref: default=None
+            reference df for clustering imputation
+    :return:
     """
     train_data = kwargs.pop("train_data", True)
     col_drop_list = kwargs.pop("col_drop", [])
@@ -1052,6 +1125,10 @@ def pre_process(
     scaler = kwargs.pop("scaler", None)
     save_name = kwargs.pop("save_name", "processed")
     save = kwargs.pop("save", True)
+    cols_with_na = kwargs.pop("cols_with_na", None)
+    reference_col_list = kwargs.pop("reference_col_list", None)
+    col_need_to_fill_na = kwargs.pop("col_need_to_fill_na", None)
+    train_df_cluster_ref = kwargs.pop("train_df_cluster_ref", None)
 
     df_clean = df.copy()
 
@@ -1108,7 +1185,18 @@ def pre_process(
                                   lon_max=lon_max)
 
 
+    # Remove row that exceed the range for zipcode
+    df_clean = remove_duplicate(df_clean)
+
+    # Remove extra illogical/impossible values
+    df_clean = df_clean[(df_clean["LotSizeSquareFeet"] <= 217800) & (df_clean["ParkingTotal"] <= 50) & (df_clean["GarageSpaces"] <= 100)]
+
     ### Handling missing
+
+    # Add missing indicator
+    df_clean, cols_with_na = add_missing_indicators(df_clean,
+                                                    col_with_na=cols_with_na)
+
     #For "Levels", rencode it
     df_clean = recode_levels_df_apply(df_clean)
 
@@ -1134,20 +1222,21 @@ def pre_process(
 
     # For other variables, clustering according to all variables, then fill the na
     quality_summary_table = data_quality_summary(df_clean)
-    col_need_to_fill_na = quality_summary_table[quality_summary_table["num_missing"] > 0]["column"]
-    reference_col_list = quality_summary_table[quality_summary_table["num_missing"] == 0]["column"].drop(columns=price_col, errors="ignore")
-    df_clean, clustering_model, scaler = fill_na_by_cluster(df=df_clean,
-                                                            target_col_list=col_need_to_fill_na,
-                                                            reference_col_list=reference_col_list,
-                                                            method=clustering_method,
-                                                            num_clusters=num_clusters,
-                                                            random_state=random_state,
-                                                            model=clustering_model,
-                                                            scaler_method=scaler_method,
-                                                            scaler=scaler)
+    col_need_to_fill_na = quality_summary_table[quality_summary_table["num_missing"] > 0]["column"] if col_need_to_fill_na is None else col_need_to_fill_na
+    reference_col_list = quality_summary_table[quality_summary_table["num_missing"] == 0]["column"].drop(columns=price_col, errors="ignore") if reference_col_list is None else reference_col_list
+    df_clean, clustering_model, scaler, train_df_cluster_ref = fill_na_by_cluster(df=df_clean,
+                                                                                  target_col_list=col_need_to_fill_na,
+                                                                                  reference_col_list=reference_col_list,
+                                                                                  method=clustering_method,
+                                                                                  num_clusters=num_clusters,
+                                                                                  random_state=random_state,
+                                                                                  model=clustering_model,
+                                                                                  scaler_method=scaler_method,
+                                                                                  scaler=scaler,
+                                                                                  train_df_cluster_ref=train_df_cluster_ref)
 
     if save:
-        save_file(df_clean,
+        save_name = save_file(df_clean,
                   save_name=save_name,
                   data_type="train" if train_data else "test",
                   model_dict={"knn_model": knn_model,
@@ -1155,4 +1244,234 @@ def pre_process(
                               "scaler": scaler})
 
 
-    return df_clean, knn_model, train_df_ref, clustering_model, col_drop_list, scaler
+    return df_clean, knn_model, train_df_ref, reference_col_list, clustering_model, col_drop_list, scaler, cols_with_na, train_df_cluster_ref, save_name
+
+
+def mdape(y_true, y_pred):
+    """
+    Compute median absolute percentage error
+    :param y_true: true data
+    :param y_pred: predicted data
+    :return: median absolute percentage error
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    mask = y_true != 0
+    return np.median(np.abs(y_true[mask] - y_pred[mask]) / np.abs(y_true[mask])) * 100 if mask.any() else np.nan
+
+
+def make_model_pipeline(
+        model: object,
+        num_cols: list=None,
+        low_card_cols: list=None,
+        high_card_cols: list=None,
+        num_scaler: str="robust",
+        smoothing: int=10,
+        min_samples_leaf: int=20,
+) -> object:
+    """
+    Create process pipeline
+    :param model: model to be used
+    :param num_cols: numerical columns
+    :param low_card_cols: categorical columns with low card
+    :param high_card_cols: categorical columns with high card
+    :param num_scaler: numerical scaler
+    :param smoothing: smoothing parameter
+    :param min_samples_leaf: minimum number of samples leaf
+    :return:
+    """
+    if low_card_cols is None or high_card_cols is None:
+        raise ValueError("low_card_cols and high_card_cols cannot be None")
+    num_sel = num_cols if num_cols is not None else selector(dtype_include=np.number)
+
+    num_scaler = RobustScaler() if num_scaler == "robust" else StandardScaler()
+
+    numeric_pipe = Pipeline(steps=[
+        ("scaler", num_scaler)
+    ])
+
+    # One hot for low card col
+    low_cat_pipe = Pipeline([
+        ("ohe", OneHotEncoder(handle_unknown="ignore"))
+    ])
+
+    # target for high card col
+    high_cat_pipe = Pipeline([
+            ("te", ce.TargetEncoder(
+            smoothing=smoothing,
+            min_samples_leaf=min_samples_leaf
+        ))
+    ])
+
+    preprocess = ColumnTransformer([
+        ("num", numeric_pipe, num_sel),
+        ("low", low_cat_pipe, low_card_cols),
+        ("high", high_cat_pipe, high_card_cols),
+    ])
+
+    return Pipeline(steps=[
+            ("prep", preprocess),
+            ("model", model)
+        ])
+
+
+def fit_predict(
+        train_df: pd.DataFrame,
+        test_df: pd.DataFrame,
+        target_col: str,
+        model: object,
+        col_drop_list: list = None,
+        card_threshold: int = 20,
+        num_scaler: str="robust",
+        smoothing: int=10,
+        min_samples_leaf: int=20,
+        log_transform: bool = False,
+):
+    """
+    Fit model and predict data
+    :param train_df: train data
+    :param test_df: test data
+    :param target_col: target column
+    :param model: model to be used
+    :param col_drop_list: columns to be dropped
+    :param card_threshold: threshold between high card and low card
+    :param num_scaler: numerical scaler
+    :param smoothing: smoothing parameter
+    :param min_samples_leaf: minimum number of samples leaf
+    :param log_transform: log transform on target col or not
+    :return:
+    """
+    col_drop_list = col_drop_list or []
+
+    train_df = train_df.drop(columns=col_drop_list, errors="ignore")
+    test_df = test_df.drop(columns=col_drop_list, errors="ignore")
+
+    X_train = train_df.drop(columns=[target_col])
+    y_train = train_df[target_col]
+
+    X_test = test_df.drop(columns=[target_col])
+    y_test = test_df[target_col]
+
+    num_cols = X_train.select_dtypes(include=np.number).columns.tolist()
+    cat_cols = [c for c in X_train.columns if c not in num_cols]
+
+    nunique = X_train[cat_cols].nunique(dropna=False)
+
+    # split categorical col through card_threshold
+    low_card_cols = nunique[(nunique <= card_threshold)].index.tolist()
+    high_card_cols = nunique[(nunique >= card_threshold)].index.tolist()
+
+    pipe = make_model_pipeline(model=model,
+                               num_cols=num_cols,
+                               low_card_cols=low_card_cols,
+                               high_card_cols=high_card_cols,
+                               num_scaler=num_scaler,
+                               smoothing=smoothing,
+                               min_samples_leaf=min_samples_leaf)
+
+    pipe.fit(X_train, y_train)
+
+    y_pred = pipe.predict(X_test)
+
+    if log_transform:
+        y_pred = np.expm1(y_pred)
+        y_test = np.expm1(y_test)
+
+    return {
+        "pipe": pipe,
+        "model": model,
+        "groups": {
+            "low_card_ohe": low_card_cols,
+            "high_card_te": high_card_cols
+        },
+        "r2": r2_score(y_test, y_pred),
+        "mdape": mdape(y_test, y_pred),
+    }
+
+
+def grid_tune_with_make_model_pipeline(
+        train_df: pd.DataFrame,
+        target_col: str,
+        model,
+        param_grid: Dict[str, Any],
+        col_drop_list: list = None,
+        card_threshold: int = 20,
+        num_scaler: str="robust",
+        smoothing: int=10,
+        min_samples_leaf: int=20,
+        scoring: str="r2",
+        cv: int=5,
+        n_jobs: int=-1,
+        verbose: int=1,
+):
+    """
+    GridSearchCV tuning for pipeline factory.
+    :param train_df: train data
+    :param target_col: target column
+    :param model: model to be used
+    :param param_grid: parameters to tune
+        param_grid keys should be for the final estimator step, e.g.:
+          {"model__alpha": [...], "model__l1_ratio": [...]}
+    :param col_drop_list: columns to be dropped
+    :param card_threshold: threshold between high card and low card
+    :param num_scaler: numerical scaler
+    :param smoothing: smoothing parameter
+    :param min_samples_leaf: minimum number of samples leaf
+    :param scoring: scoring function
+    :param cv: number of folds
+    :param n_jobs: number of jobs
+    :param verbose: verbosity
+    """
+
+    train_df = train_df.drop(columns=col_drop_list, errors="ignore")
+
+    X_train = train_df.drop(columns=[target_col])
+
+    y_train = train_df[target_col]
+
+    num_cols = X_train.select_dtypes(include=np.number).columns.tolist()
+    cat_cols = [c for c in X_train.columns if c not in num_cols]
+
+    nunique = X_train[cat_cols].nunique(dropna=False)
+
+    # split categorical col through card_threshold
+    low_card_cols = nunique[(nunique <= card_threshold)].index.tolist()
+    high_card_cols = nunique[(nunique >= card_threshold)].index.tolist()
+
+    pipe = make_model_pipeline(
+        model=model,
+        num_cols=num_cols,
+        low_card_cols=low_card_cols,
+        high_card_cols=high_card_cols,
+        num_scaler=num_scaler,
+        smoothing=smoothing,
+        min_samples_leaf=min_samples_leaf,
+    )
+
+    gs = GridSearchCV(
+        estimator=pipe,
+        param_grid=param_grid,
+        scoring=scoring,
+        cv=cv,
+        n_jobs=n_jobs,
+        verbose=verbose,
+        refit=True,
+        error_score=np.nan,
+        return_train_score=False,
+    )
+
+    gs.fit(X_train, y_train)
+
+    results_df = (
+        pd.DataFrame(gs.cv_results_)
+        .sort_values("rank_test_score")
+        .reset_index(drop=True)
+    )
+
+    return {
+        "best_pipeline": gs.best_estimator_,
+        "best_params": gs.best_params_,
+        "best_score": gs.best_score_,
+        "results_df": results_df,
+        "grid_object": gs,
+    }
