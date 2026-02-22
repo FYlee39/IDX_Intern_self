@@ -1383,7 +1383,7 @@ def fit_predict(
         },
         "R2(log)": r2_score(y_test, y_pred),
         "R2": r2_score(y_test_exp, y_pred_exp),
-        "MAPE": mean_absolute_percentage_error(y_test_exp, y_pred_exp),
+        "MAPE": mean_absolute_percentage_error(y_test_exp, y_pred_exp) * 100,
         "MdAPE": mdape(y_test_exp, y_pred_exp),
     }
 
