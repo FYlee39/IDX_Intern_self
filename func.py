@@ -18,7 +18,7 @@ from sklearn.preprocessing import RobustScaler, OneHotEncoder, StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.compose import ColumnTransformer, make_column_selector as selector
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import r2_score, mean_absolute_percentage_error
+from sklearn.metrics import r2_score, mean_absolute_percentage_error, root_mean_squared_error, mean_absolute_error
 from sklearn.model_selection import GridSearchCV
 from sklearn.base import BaseEstimator
 
@@ -1315,6 +1315,41 @@ def make_model_pipeline(
         ])
 
 
+def make_model_numeric_only_pipeline(
+        model: object,
+        num_cols,
+        num_scaler=None,
+) -> object:
+    """
+    Create process pipeline for numerical only
+    :param model: model to be used
+    :param num_cols: numerical columns
+    :param num_scaler: numerical scaler
+    """
+    num_sel = num_cols if num_cols is not None else selector(dtype_include=np.number)
+
+    if num_scaler is None:
+        numeric_pipe = "passthrough"
+    else:
+        num_scaler = RobustScaler() if num_scaler == "robust" else StandardScaler()
+
+        numeric_pipe = Pipeline(steps=[
+            ("scaler", num_scaler)
+        ])
+
+    preprocess = ColumnTransformer(
+        [
+            ("num", numeric_pipe, num_sel)
+        ],
+        remainder = "drop",
+    )
+
+    return Pipeline(steps=[
+        ("prep", preprocess),
+        ("model", model),
+    ])
+
+
 def fit_predict(
         train_df: pd.DataFrame,
         test_df: pd.DataFrame,
@@ -1325,6 +1360,7 @@ def fit_predict(
         num_scaler: str="robust",
         smoothing: int=10,
         min_samples_leaf: int=20,
+        num_only: bool=False,
 ):
     """
     Fit model and predict data
@@ -1337,6 +1373,7 @@ def fit_predict(
     :param num_scaler: numerical scaler
     :param smoothing: smoothing parameter
     :param min_samples_leaf: minimum number of samples leaf
+    :param num_only: only numerical columns
     :return:
     """
     col_drop_list = col_drop_list or []
@@ -1359,7 +1396,12 @@ def fit_predict(
     low_card_cols = nunique[(nunique <= card_threshold)].index.tolist()
     high_card_cols = nunique[(nunique >= card_threshold)].index.tolist()
 
-    pipe = make_model_pipeline(model=model,
+    if num_only:
+        pipe = make_model_numeric_only_pipeline(model=model,
+                                                num_cols=num_cols,
+                                                num_scaler=num_scaler)
+    else:
+        pipe = make_model_pipeline(model=model,
                                num_cols=num_cols,
                                low_card_cols=low_card_cols,
                                high_card_cols=high_card_cols,
@@ -1369,10 +1411,42 @@ def fit_predict(
 
     pipe.fit(X_train, y_train)
 
+    y_train_pred = pipe.predict(X_train)
+
     y_pred = pipe.predict(X_test)
 
     y_pred_exp = np.expm1(y_pred)
     y_test_exp = np.expm1(y_test)
+
+    # Compute metrics
+
+    metrics = {}
+
+    # core
+    metrics["R2(log)"] = r2_score(y_test, y_pred)
+    metrics["R2"] = r2_score(y_test_exp, y_pred_exp)
+    metrics["MAPE"] = mean_absolute_percentage_error(y_test_exp, y_pred_exp) * 100
+    metrics["MdAPE"] = mdape(y_test_exp, y_pred_exp)
+
+    # regression quality
+    metrics["RMSE"] = root_mean_squared_error(y_test_exp, y_pred_exp)
+    metrics["MAE"] = mean_absolute_error(y_test_exp, y_pred_exp)
+
+    # bias
+    residuals = y_pred_exp - y_test_exp
+    metrics["Bias(mean residual)"] = np.mean(residuals)
+
+    # tail behavior
+    # Absolute Percentage Error
+    ape_vals = np.abs((y_pred_exp - y_test_exp) / np.abs(y_test_exp)) * 100
+
+    metrics["APE_95pct"] = np.percentile(ape_vals, 95)
+    metrics["APE_99pct"] = np.percentile(ape_vals, 99)
+    metrics["APE_max"] = np.max(ape_vals)
+
+    metrics["Train_R2(log)"] = r2_score(y_train, y_train_pred)
+    metrics["Test_R2(log)"] = metrics["R2(log)"]
+    metrics["R2_gap"] = metrics["Train_R2(log)"] - metrics["Test_R2(log)"]
 
     return {
         "pipe": pipe,
@@ -1381,10 +1455,7 @@ def fit_predict(
             "low_card_ohe": low_card_cols,
             "high_card_te": high_card_cols
         },
-        "R2(log)": r2_score(y_test, y_pred),
-        "R2": r2_score(y_test_exp, y_pred_exp),
-        "MAPE": mean_absolute_percentage_error(y_test_exp, y_pred_exp) * 100,
-        "MdAPE": mdape(y_test_exp, y_pred_exp),
+        "Metrics": metrics
     }
 
 
