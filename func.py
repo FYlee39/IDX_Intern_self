@@ -1446,9 +1446,9 @@ def compute_metrics(
 
     smear = np.mean(np.exp(resid))
 
-    y_test_exp = np.expm1(y_test) * smear
+    y_test_exp = np.expm1(y_test)
 
-    y_pred_exp = np.expm1(y_pred)
+    y_pred_exp = np.expm1(y_pred) * smear
 
     # Compute metrics
 
