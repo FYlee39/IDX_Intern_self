@@ -1415,8 +1415,40 @@ def fit_predict(
 
     y_pred = pipe.predict(X_test)
 
+    return {
+        "pipe": pipe,
+        "model": model,
+        "groups": {
+            "low_card_ohe": low_card_cols,
+            "high_card_te": high_card_cols
+        },
+        "Metrics": compute_metrics(y_test, y_pred, y_train, y_train_pred),
+    }
+
+
+def compute_metrics(
+        y_test: pd.Series,
+        y_pred: pd.Series,
+        y_train: pd.Series,
+        y_train_pred: pd.Series,
+) -> dict:
+    """
+    Compute metrics
+    :param y_test: test data
+    :param y_pred: predicted data
+    :param y_train: train data
+    :param y_train_pred: predicted training data
+    :return: metrics
+    """
+
+    # Duan smearing estimator
+    resid = y_train - y_train_pred
+
+    smear = np.mean(np.exp(resid))
+
+    y_test_exp = np.expm1(y_test) * smear
+
     y_pred_exp = np.expm1(y_pred)
-    y_test_exp = np.expm1(y_test)
 
     # Compute metrics
 
@@ -1448,15 +1480,7 @@ def fit_predict(
     metrics["Test_R2(log)"] = metrics["R2(log)"]
     metrics["R2_gap"] = metrics["Train_R2(log)"] - metrics["Test_R2(log)"]
 
-    return {
-        "pipe": pipe,
-        "model": model,
-        "groups": {
-            "low_card_ohe": low_card_cols,
-            "high_card_te": high_card_cols
-        },
-        "Metrics": metrics
-    }
+    return metrics
 
 
 def grid_tune_with_make_model_pipeline(
