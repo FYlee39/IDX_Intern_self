@@ -21,6 +21,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import r2_score, mean_absolute_percentage_error, root_mean_squared_error, mean_absolute_error
 from sklearn.model_selection import GridSearchCV
 from sklearn.base import BaseEstimator
+from sklearn.ensemble import StackingRegressor
 
 from kmodes.kprototypes import KPrototypes
 
@@ -957,6 +958,7 @@ def remove_by_zip(
     """
     # Extract first 3 digits as ZIP prefix
     df["ZIP_prefix"] = df["PostalCode"].str[:3]
+    df = df.drop(columns=["PostalCode"])
 
     # Convert to numeric, invalid become NaN
     df["ZIP_prefix_num"] = pd.to_numeric(df["ZIP_prefix"], errors="coerce")
@@ -1186,7 +1188,7 @@ def pre_process(
 
 
     # Remove row that exceed the range for zipcode
-    df_clean = remove_duplicate(df_clean)
+    df_clean = remove_by_zip(df_clean)
 
     # Remove extra illogical/impossible values
     df_clean = df_clean[(df_clean["LotSizeSquareFeet"] <= 217800) & (df_clean["ParkingTotal"] <= 50) & (df_clean["GarageSpaces"] <= 100)]
@@ -1361,6 +1363,7 @@ def fit_predict(
         smoothing: int=10,
         min_samples_leaf: int=20,
         num_only: bool=False,
+        log_transformed: bool=True
 ):
     """
     Fit model and predict data
@@ -1374,6 +1377,7 @@ def fit_predict(
     :param smoothing: smoothing parameter
     :param min_samples_leaf: minimum number of samples leaf
     :param num_only: only numerical columns
+    :param log_transformed: log_transformed: whether the data has been log transformed
     :return:
     """
     col_drop_list = col_drop_list or []
@@ -1422,7 +1426,7 @@ def fit_predict(
             "low_card_ohe": low_card_cols,
             "high_card_te": high_card_cols
         },
-        "Metrics": compute_metrics(y_test, y_pred, y_train, y_train_pred),
+        "Metrics": compute_metrics(y_test, y_pred, y_train, y_train_pred, log_transformed),
     }
 
 
@@ -1431,6 +1435,7 @@ def compute_metrics(
         y_pred: pd.Series,
         y_train: pd.Series,
         y_train_pred: pd.Series,
+        log_transformed: bool=True
 ) -> dict:
     """
     Compute metrics
@@ -1438,21 +1443,32 @@ def compute_metrics(
     :param y_pred: predicted data
     :param y_train: train data
     :param y_train_pred: predicted training data
+    :param log_transformed: whether the data has been log transformed
     :return: metrics
     """
-
-    # Duan smearing estimator
-    resid = y_train - y_train_pred
-
-    smear = np.mean(np.exp(resid))
-
-    y_test_exp = np.expm1(y_test)
-
-    y_pred_exp = np.expm1(y_pred) * smear
 
     # Compute metrics
 
     metrics = {}
+
+    if log_transformed:
+        # Duan smearing estimator
+        # resid = y_train - y_train_pred
+        #
+        # smear = np.mean(np.exp(resid))
+        #
+        # y_test_exp = np.expm1(y_test)
+        #
+        # y_pred_exp = np.expm1(y_pred) * smear
+
+        y_test_exp = np.expm1(y_test)
+
+        y_pred_exp = np.expm1(y_pred)
+
+    else:
+        y_test_exp = y_test
+
+        y_pred_exp = y_pred
 
     # core
     metrics["R2(log)"] = r2_score(y_test, y_pred)
