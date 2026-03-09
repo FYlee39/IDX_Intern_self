@@ -13,8 +13,6 @@ import joblib
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "model.pkl"
 
-MODEL_PATH = "model.pkl"
-
 # Define required features expected by the trained pipeline
 REQUIRED_FEATURES = [
     "LivingArea",
