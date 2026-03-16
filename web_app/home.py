@@ -1,5 +1,7 @@
 import streamlit as st
 from utils import get_required_features
+from state_helpers import initialize_session_state
+initialize_session_state()
 
 # Title
 st.title("🏠 House Price Prediction App")
@@ -72,7 +74,7 @@ st.header("About the Model")
 
 st.write(
     """
-    The prediction model was trained on historical housing market data and uses
+    The prediction model was trained on historical housing market data from (Jan to Nov 2025), and uses
     a machine learning pipeline that includes data preprocessing and regression modeling.
     
     Predictions represent estimated market values and should be interpreted as approximate values.

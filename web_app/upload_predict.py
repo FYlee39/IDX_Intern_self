@@ -1,44 +1,48 @@
 import streamlit as st
 import pandas as pd
 from utils import load_model, validate_uploaded_data, predict_from_dataframe
+from state_helpers import *
+
+initialize_session_state()
 
 # Title
-st.title("🏠 House Price Prediction App")
+st.title("Upload and Predict")
+
+# File upload
+uploaded_file = st.file_uploader(
+    "Upload CSV",
+    type=["csv"]
+)
+
 st.write(
     """
     Upload a CSV file containing housing features.
+
     The app will validate the file and generate predicted house prices.
     """
 )
 
-# Load model
-model = load_model()
-
-# File upload
-uploaded_file = st.file_uploader(
-    "Upload your CSV file",
-    type=["csv"]
-)
-
 if uploaded_file is not None:
-    try:
-        df = pd.read_csv(uploaded_file)
+    df = pd.read_csv(uploaded_file)
+    save_uploaded_data(df, uploaded_file.name)
 
-        st.subheader("Uploaded Data Preview")
-        st.dataframe(df.head())
-        st.write(f"Shape of uploaded data: {df.shape[0]} rows × {df.shape[1]} columns")
+    st.subheader("Uploaded Data Preview")
+    st.dataframe(df.head())
+    st.write(f"Shape of uploaded data: {df.shape[0]} rows × {df.shape[1]} columns")
 
-        # Validate input data
-        is_valid, message = validate_uploaded_data(df)
+    is_valid, message = validate_uploaded_data(df)
+    save_validation_result(is_valid, message)
 
-        if not is_valid:
-            st.error(message)
-        else:
-            st.success("File validation passed.")
+    if is_valid:
+        st.success(message)
 
-        # Prediction button
+        # Load model
+        model = load_model()
+
         if st.button("Run Prediction"):
             result_df = predict_from_dataframe(model, df)
+            save_prediction_data(result_df)
+            st.dataframe(result_df.head())
 
             st.subheader("Prediction Result")
             st.dataframe(result_df.head())
@@ -53,12 +57,17 @@ if uploaded_file is not None:
                 mime="text/csv"
             )
 
-    except Exception as e:
-        st.error(f"Error reading or processing file: {e}")
+    else:
+        st.error(message)
 
-    # Footer
-    st.markdown("---")
-    st.caption(
-        "Please upload a CSV file with the required feature columns. "
-        "Predictions are estimates based on the trained model."
-    )
+if st.button("Clear Current Data"):
+    clear_uploaded_workflow()
+    st.success("Session data cleared.")
+
+
+# Footer
+st.markdown("---")
+st.caption(
+    "Please upload a CSV file with the required feature columns. "
+    "Predictions are estimates based on the trained model."
+)
