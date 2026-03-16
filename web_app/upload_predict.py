@@ -51,7 +51,8 @@ if df is not None:
         model = load_model()
 
         if st.button("Run Prediction"):
-            result_df = predict_from_dataframe(model, df)["PredictedPrice"]
+            preds_log, preds = predict_from_dataframe(model, df)
+            result_df = pd.DataFrame({"Pred_logClosePrice": preds_log, "Pred_ClosePrice": preds})
             save_prediction_data(result_df)
 
             st.subheader("Prediction Result")

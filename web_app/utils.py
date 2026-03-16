@@ -135,20 +135,6 @@ def generate_predictions(model, X):
 # Post-processing
 # --------------------------------------------------
 
-def attach_predictions(df, predictions):
-    """
-    Add prediction column to original dataframe.
-    :param df: uploaded dataframe
-    :param predictions: prediction from model
-    """
-
-    result = df.copy()
-
-    result["PredictedPrice"] = predictions
-
-    return result
-
-
 # --------------------------------------------------
 # Full prediction pipeline
 # --------------------------------------------------
@@ -164,12 +150,10 @@ def predict_from_dataframe(model, df):
     X = prepare_features(df)
 
     # Run prediction
-    preds = generate_predictions(model, X)
+    preds_log = generate_predictions(model, X)
 
     # using log-price model
-    preds = np.expm1(preds)
+    preds = np.expm1(preds_log)
 
-    # Attach predictions
-    result_df = attach_predictions(df, preds)
 
-    return result_df
+    return preds_log, preds
