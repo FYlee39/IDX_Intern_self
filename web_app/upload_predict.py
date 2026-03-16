@@ -51,9 +51,8 @@ if df is not None:
         model = load_model()
 
         if st.button("Run Prediction"):
-            result_df = predict_from_dataframe(model, df)
+            result_df = predict_from_dataframe(model, df)["PredictedPrice"]
             save_prediction_data(result_df)
-            st.dataframe(result_df.head())
 
             st.subheader("Prediction Result")
             st.dataframe(result_df.head())
