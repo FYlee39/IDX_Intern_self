@@ -63,6 +63,7 @@ if uploaded_file is not None:
 if st.button("Clear Current Data"):
     clear_uploaded_workflow()
     st.success("Session data cleared.")
+    st.rerun()
 
 
 # Footer
