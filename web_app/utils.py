@@ -152,7 +152,4 @@ def predict_from_dataframe(model, df):
     # Run prediction
     preds_log = generate_predictions(model, X)
 
-    # using log-price model
-    preds = np.expm1(preds_log)
-
-    return (preds_log, preds)
+    return preds_log
