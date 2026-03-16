@@ -35,6 +35,7 @@ if uploaded_file is not None:
         st.error(message)
 
 df = get_uploaded_data()
+is_valid, message = validate_uploaded_data(df)
 
 if df is not None:
     st.write("Uploaded data preview:")
@@ -44,7 +45,7 @@ if df is not None:
     # Load model
     model = load_model()
 
-    if st.button("Run Prediction"):
+    if is_valid and st.button("Run Prediction"):
         result_df = predict_from_dataframe(model, df)
         save_prediction_data(result_df)
         st.dataframe(result_df.head())
