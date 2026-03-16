@@ -35,33 +35,38 @@ if uploaded_file is not None:
         st.error(message)
 
 df = get_uploaded_data()
-is_valid, message = validate_uploaded_data(df)
 
 if df is not None:
     st.write("Uploaded data preview:")
     st.dataframe(df.head())
     st.write(f"Shape of uploaded data: {df.shape[0]} rows × {df.shape[1]} columns")
 
-    # Load model
-    model = load_model()
+    is_valid, message = validate_uploaded_data(df)
+    save_validation_result(is_valid, message)
 
-    if is_valid and st.button("Run Prediction"):
-        result_df = predict_from_dataframe(model, df)
-        save_prediction_data(result_df)
-        st.dataframe(result_df.head())
+    if is_valid:
+        st.success(message)
 
-        st.subheader("Prediction Result")
-        st.dataframe(result_df.head())
+        # Load model
+        model = load_model()
 
-        # Convert dataframe to CSV for download
-        csv_data = result_df.to_csv(index=False).encode("utf-8")
+        if st.button("Run Prediction"):
+            result_df = predict_from_dataframe(model, df)
+            save_prediction_data(result_df)
+            st.dataframe(result_df.head())
 
-        st.download_button(
-            label="Download Prediction Results",
-            data=csv_data,
-            file_name="house_price_predictions.csv",
-            mime="text/csv"
-        )
+            st.subheader("Prediction Result")
+            st.dataframe(result_df.head())
+
+            # Convert dataframe to CSV for download
+            csv_data = result_df.to_csv(index=False).encode("utf-8")
+
+            st.download_button(
+                label="Download Prediction Results",
+                data=csv_data,
+                file_name="house_price_predictions.csv",
+                mime="text/csv"
+            )
 else:
     st.warning("Please upload a CSV file first.")
 
