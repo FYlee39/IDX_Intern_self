@@ -12,12 +12,39 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "model.pkl"
 
 # Define required features expected by the trained pipeline
-# Need modifyed
+# Need modified
 REQUIRED_FEATURES = [
-    "LivingArea",
-    "Beds",
-    "Baths",
-    "LotSize"
+    'BuyerAgentAOR', 'ListAgentAOR', 'ViewYN', 'PoolPrivateYN', 'CloseDate',
+       'ListAgentFirstName', 'ListAgentLastName', 'Latitude', 'Longitude',
+       'UnparsedAddress', 'LivingArea', 'DaysOnMarket', 'ListOfficeName',
+       'BuyerOfficeName', 'CoListOfficeName', 'ListAgentFullName',
+       'CoListAgentFirstName', 'CoListAgentLastName', 'BuyerAgentMlsId',
+       'BuyerAgentFirstName', 'BuyerAgentLastName', 'AssociationFeeFrequency',
+       'MLSAreaMajor', 'CountyOrParish', 'AttachedGarageYN', 'ParkingTotal',
+       'LotSizeAcres', 'SubdivisionName', 'BuyerOfficeAOR', 'YearBuilt',
+       'StreetNumberNumeric', 'BathroomsTotalInteger', 'City', 'BedroomsTotal',
+       'ContractStatusChangeDate', 'PurchaseContractDate',
+       'ListingContractDate', 'StateOrProvince', 'FireplaceYN', 'Stories',
+       'LotSizeArea', 'MainLevelBedrooms', 'NewConstructionYN', 'GarageSpaces',
+       'HighSchoolDistrict', 'AssociationFee', 'LotSizeSquareFeet',
+       'EmailDomain', 'ZIP_prefix', 'BuyerAgentAOR_missing',
+       'ListAgentAOR_missing', 'Flooring_missing', 'ViewYN_missing',
+       'PoolPrivateYN_missing', 'ListAgentFirstName_missing',
+       'ListAgentLastName_missing', 'UnparsedAddress_missing',
+       'BuyerOfficeName_missing', 'CoListOfficeName_missing',
+       'ListAgentFullName_missing', 'CoListAgentFirstName_missing',
+       'CoListAgentLastName_missing', 'BuyerAgentMlsId_missing',
+       'BuyerAgentFirstName_missing', 'BuyerAgentLastName_missing',
+       'AssociationFeeFrequency_missing', 'MLSAreaMajor_missing',
+       'AttachedGarageYN_missing', 'SubdivisionName_missing',
+       'BuyerOfficeAOR_missing', 'YearBuilt_missing',
+       'StreetNumberNumeric_missing', 'City_missing',
+       'PurchaseContractDate_missing', 'FireplaceYN_missing',
+       'Stories_missing', 'Levels_missing', 'MainLevelBedrooms_missing',
+       'NewConstructionYN_missing', 'HighSchoolDistrict_missing',
+       'AssociationFee_missing', 'EmailDomain_missing', 'Levels_final',
+       'CarpetYN', 'LaminateYN', 'VinylYN', 'WoodYN', 'TileYN', 'ConcreteYN',
+       'StoneYN', 'SeeRemarksYN', 'BambooYN', 'BrickYN',
 ]
 
 
