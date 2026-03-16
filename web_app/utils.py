@@ -1,9 +1,7 @@
-import os
-import pandas as pd
 import numpy as np
-import os
 from pathlib import Path
 import joblib
+import streamlit as st
 
 
 # --------------------------------------------------
@@ -14,6 +12,7 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "model.pkl"
 
 # Define required features expected by the trained pipeline
+# Need modifyed
 REQUIRED_FEATURES = [
     "LivingArea",
     "Beds",
@@ -24,19 +23,13 @@ REQUIRED_FEATURES = [
 
 # --------------------------------------------------
 # Model loading
+# cache the model so it loads only once
 # --------------------------------------------------
 
+@st.cache_resource
 def load_model():
-    """
-    Load the trained model pipeline from disk.
-
-    Returns
-    -------
-    model : sklearn pipeline
-        Trained pipeline used for prediction
-    """
-
-    if not os.path.exists(MODEL_PATH):
+    """Load the whole pipline"""
+    if not MODEL_PATH.exists():
         raise FileNotFoundError(
             f"Model file not found: {MODEL_PATH}"
         )
@@ -44,7 +37,6 @@ def load_model():
     model = joblib.load(MODEL_PATH)
 
     return model
-
 
 # --------------------------------------------------
 # Feature helpers
@@ -65,17 +57,7 @@ def get_required_features():
 def validate_uploaded_data(df):
     """
     Validate the uploaded dataframe.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-
-    Returns
-    -------
-    bool
-        Whether the file is valid
-    str
-        Message describing validation result
+    :param df: uploaded dataframe
     """
 
     if df.empty:
@@ -98,15 +80,7 @@ def validate_uploaded_data(df):
 def prepare_features(df):
     """
     Select and reorder the feature columns used by the model.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-
-    Returns
-    -------
-    pandas.DataFrame
-        Model-ready dataframe
+    :param df: uploaded dataframe
     """
 
     features = get_required_features()
@@ -123,16 +97,8 @@ def prepare_features(df):
 def generate_predictions(model, X):
     """
     Run model inference.
-
-    Parameters
-    ----------
-    model : sklearn pipeline
-    X : pandas.DataFrame
-
-    Returns
-    -------
-    numpy.ndarray
-        Predicted prices
+    :param model: trained model
+    :param X: input data
     """
 
     y_pred = model.predict(X)
@@ -146,15 +112,8 @@ def generate_predictions(model, X):
 def attach_predictions(df, predictions):
     """
     Add prediction column to original dataframe.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-    predictions : array-like
-
-    Returns
-    -------
-    pandas.DataFrame
+    :param df: uploaded dataframe
+    :param predictions: prediction from model
     """
 
     result = df.copy()
@@ -171,16 +130,8 @@ def attach_predictions(df, predictions):
 def predict_from_dataframe(model, df):
     """
     Complete prediction workflow.
-
-    Parameters
-    ----------
-    model : sklearn pipeline
-    df : pandas.DataFrame
-
-    Returns
-    -------
-    pandas.DataFrame
-        Original data with prediction column
+    :param model: trained model
+    :param df: uploaded dataframe
     """
 
     # Prepare features
