@@ -4,3 +4,6 @@ numpy
 scikit-learn
 joblib
 category_encoders
+xgboost
+lightgbm
+scipy

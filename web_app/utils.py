@@ -3,21 +3,6 @@ from pathlib import Path
 import joblib
 import streamlit as st
 
-import pandas as pd
-
-
-from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import RobustScaler, OneHotEncoder, StandardScaler
-from sklearn.cluster import KMeans
-from sklearn.compose import ColumnTransformer, make_column_selector as selector
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import r2_score, mean_absolute_percentage_error, root_mean_squared_error, mean_absolute_error
-from sklearn.model_selection import GridSearchCV
-from sklearn.base import BaseEstimator
-from sklearn.ensemble import StackingRegressor
-
-import category_encoders as ce
-
 # --------------------------------------------------
 # Configuration
 # --------------------------------------------------
