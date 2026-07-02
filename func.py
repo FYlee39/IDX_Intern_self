@@ -33,9 +33,9 @@ import category_encoders as ce
 
 
 def load_csvs_from_ftp_to_df(
-    host: str="ftp.boxgrad.com",
-    username: str="data@idxexchange.com",
-    password: str="Real_estate123$",
+    host: Optional[str]=None,
+    username: Optional[str]=None,
+    password: Optional[str]=None,
     remote_dir: str="/raw",
     date_range: Iterable[int]=range(6, 12),
     prefix: str="california/CRMLSSold",
@@ -62,6 +62,10 @@ def load_csvs_from_ftp_to_df(
     :param provided_local_dir: Local directory to download csv files
     :return: Combined DataFrame
     """
+    host = host or os.getenv("IDX_FTP_HOST")
+    username = username or os.getenv("IDX_FTP_USERNAME")
+    password = password or os.getenv("IDX_FTP_PASSWORD")
+
     # NEW: detect Google Colab and call colab_func
     if "google.colab" in sys.modules:
         try:
@@ -114,9 +118,20 @@ def load_csvs_from_ftp_to_df(
         combined = pd.concat(dfs, ignore_index=True)
 
     elif provided_local_dir:
-        combined = read_csvs(date_range=date_range, year=year, prefix=prefix)
+        combined = read_csvs(
+            date_range=date_range,
+            year=year,
+            prefix=prefix,
+            local_dir=provided_local_dir,
+        )
 
     else:
+        if not all([host, username, password]):
+            raise ValueError(
+                "FTP credentials are required. Pass host, username, and password "
+                "explicitly or set IDX_FTP_HOST, IDX_FTP_USERNAME, and IDX_FTP_PASSWORD."
+            )
+
         pandas_read_csv_kwargs = pandas_read_csv_kwargs or {}
 
         # Use a list of DataFrames, then concat once for speed.
@@ -160,13 +175,15 @@ def load_csvs_from_ftp_to_df(
 def read_csvs(
         date_range: Iterable[int],
         year: int=2025,
-        prefix: str="california/CRMLSSold"
+        prefix: str="california/CRMLSSold",
+        local_dir: Optional[str]=None,
 ) -> pd.DataFrame:
     """
     Read all files within the range and filter corresponding rows
     :param date_range: range of files to read
     :param year: year of files to read
     :param prefix: prefix of the files
+    :param local_dir: optional directory containing the CSV files
     :return: pandas DataFrame
     """
 
@@ -175,6 +192,8 @@ def read_csvs(
     for i in date_range:
         date = str(year) + str(i) if len(str(i)) == 2 else str(year) + "0" + str(i)
         file_name = prefix + date + ".csv"
+        if local_dir:
+            file_name = os.path.join(local_dir, os.path.basename(file_name))
         dfs.append(pd.read_csv(file_name, low_memory=False))
 
     combined = pd.concat(dfs, ignore_index=True)

@@ -7,3 +7,7 @@ category_encoders
 xgboost
 lightgbm
 scipy
+matplotlib
+seaborn
+kmodes
+kmedoids

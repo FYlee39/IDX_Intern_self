@@ -1,5 +1,5 @@
 import streamlit as st
-from utils import get_required_features
+from utils import get_required_features, get_sample_features
 from state_helpers import initialize_session_state
 initialize_session_state()
 
@@ -42,7 +42,7 @@ st.header("Required Input Columns")
 
 features = get_required_features()
 
-st.write("Your CSV file must include the following columns:")
+st.write(f"Your CSV file must include all {len(features)} model feature columns.")
 
 st.table(features)
 
@@ -53,16 +53,14 @@ st.markdown("---")
 # --------------------------------------------------
 
 st.header("Example Input Format")
-# Need modified
+sample_features = get_sample_features()
 st.code(
-    """
-    LivingArea,Beds,Baths,LotSize
-    1800,3,2,5000
-    2400,4,3,6500
-    1500,3,2,4000
-    """,
+    ",".join(sample_features)
+    + "\n1800,3,2,34.05,-118.24,1998,Los Angeles,Los Angeles",
     language="csv"
 )
+
+st.caption("The example shows a subset of columns; uploaded files still need the full schema listed above.")
 
 st.markdown("---")
 

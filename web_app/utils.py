@@ -1,4 +1,3 @@
-import numpy as np
 from pathlib import Path
 import joblib
 import streamlit as st
@@ -10,8 +9,7 @@ import streamlit as st
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "model.pkl"
 
-# Define required features expected by the trained pipeline
-# Need modified
+# Feature columns expected by the trained pipeline, in model input order.
 REQUIRED_FEATURES = [
     'BuyerAgentAOR', 'ListAgentAOR', 'ViewYN', 'PoolPrivateYN', 'CloseDate',
        'ListAgentFirstName', 'ListAgentLastName', 'Latitude', 'Longitude',
@@ -46,6 +44,17 @@ REQUIRED_FEATURES = [
        'StoneYN', 'SeeRemarksYN', 'BambooYN', 'BrickYN',
 ]
 
+SAMPLE_FEATURES = [
+    "LivingArea",
+    "BedroomsTotal",
+    "BathroomsTotalInteger",
+    "Latitude",
+    "Longitude",
+    "YearBuilt",
+    "City",
+    "CountyOrParish",
+]
+
 
 # --------------------------------------------------
 # Model loading
@@ -54,7 +63,7 @@ REQUIRED_FEATURES = [
 
 @st.cache_resource
 def load_model():
-    """Load the whole pipline"""
+    """Load the trained model pipeline."""
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
             f"Model file not found: {MODEL_PATH}"
@@ -76,6 +85,14 @@ def get_required_features():
     return REQUIRED_FEATURES
 
 
+def get_sample_features():
+    """
+    Return a short subset of feature columns for documentation and UI examples.
+    """
+
+    return SAMPLE_FEATURES
+
+
 # --------------------------------------------------
 # Input validation
 # --------------------------------------------------
@@ -89,14 +106,23 @@ def validate_uploaded_data(df):
     if df.empty:
         return False, "Uploaded file is empty."
 
-    required_cols = get_required_features()
-
-    missing_cols = [c for c in required_cols if c not in df.columns]
+    missing_cols = get_missing_features(df)
 
     if missing_cols:
-        return False, f"Missing required columns: {missing_cols}"
+        preview = ", ".join(missing_cols[:10])
+        remaining = len(missing_cols) - 10
+        suffix = f" and {remaining} more" if remaining > 0 else ""
+        return False, f"Missing {len(missing_cols)} required column(s): {preview}{suffix}."
 
     return True, "Validation successful."
+
+
+def get_missing_features(df):
+    """
+    Return required model features that are not present in the dataframe.
+    """
+
+    return [c for c in get_required_features() if c not in df.columns]
 
 
 # --------------------------------------------------
@@ -109,9 +135,14 @@ def prepare_features(df):
     :param df: uploaded dataframe
     """
 
-    features = get_required_features()
+    missing_cols = get_missing_features(df)
+    if missing_cols:
+        raise ValueError(
+            "Cannot prepare features because required columns are missing: "
+            + ", ".join(missing_cols)
+        )
 
-    X = df[features].copy()
+    X = df[get_required_features()].copy()
 
     return X
 
